@@ -1,0 +1,6 @@
+{
+  "enabledPlugins": {
+    "haskell-skill@konn-haskell-claude-tools": true,
+    "hoogle@claude-hoogle": true
+  }
+}

@@ -118,6 +118,18 @@ jobs:
       plan: ${{matrix.plan.name}}
       artifact: artifact-${{matrix.plan.name}}
     runs-on: ubuntu-latest
+    services:
+      # MQTT broker for the hasquitto-core integration suite. mosquitto 2.x
+      # refuses remote/anonymous access without a config, so we override the
+      # entrypoint to write a minimal anonymous-listener config and exec it.
+      mqtt:
+        image: eclipse-mosquitto:2.0.18
+        ports:
+          - 1883:1883
+        entrypoint: /bin/sh
+        command: >-
+          -c "printf 'listener 1883\nallow_anonymous true\n' > /tmp/mosquitto.conf
+          && exec /usr/sbin/mosquitto -c /tmp/mosquitto.conf"
     steps:
       - name: Fail when Corresponding Build didn't succeed
         if: ${{needs.build.result != 'success' }}
@@ -130,8 +142,26 @@ jobs:
         uses: actions/download-artifact@v3
       - name: Decompress
         run: tar xaf ${{env.artifact}}/${{env.artifact}}.tar.zst
+      - name: Wait for the MQTT broker
+        shell: bash
+        run: |
+          for _ in $(seq 1 30); do
+            if (exec 3<>/dev/tcp/127.0.0.1/1883) 2>/dev/null; then
+              echo "mosquitto is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "mosquitto did not become ready" >&2
+          exit 1
       - name: Run Tests
         shell: bash
+        env:
+          # Point the hasquitto-core integration suite at the service container
+          # (its --mqtt-host / --mqtt-port options). Use 127.0.0.1 to avoid any
+          # localhost->::1 ambiguity; other test suites ignore these.
+          TASTY_MQTT_HOST: 127.0.0.1
+          TASTY_MQTT_PORT: "1883"
         run: |
           set -euo pipefail
           TOTAL=0

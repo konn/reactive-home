@@ -1,0 +1,133 @@
+cabal-version: 3.4
+name: hasquitto-core
+version: 0.1.0.0
+description: Please see the README on GitHub at <https://github.com/konn/reactive-home/hasquitto-core#readme>
+homepage: https://github.com/konn/reactive-home#readme
+bug-reports: https://github.com/konn/reactive-home/issues
+author: Hiromi ISHII
+maintainer: konn.jinro_at_gmail.com
+copyright: (c) Hiromi ISHII 2026- present
+license: BSD-3-Clause
+license-file: LICENSE
+build-type: Simple
+tested-with:
+  ghc ==9.12.4
+
+extra-doc-files:
+  CHANGELOG.md
+  README.md
+
+source-repository head
+  type: git
+  location: https://github.com/konn/reactive-home
+  subdir: hasquitto-core
+
+common defaults
+  autogen-modules: Paths_hasquitto_core
+  other-modules: Paths_hasquitto_core
+  ghc-options:
+    -Wall
+    -Wcompat
+    -Widentities
+    -Wincomplete-record-updates
+    -Wincomplete-uni-patterns
+    -Wmissing-export-lists
+    -Wmissing-home-modules
+    -Wpartial-fields
+    -Wredundant-constraints
+    -Wunused-packages
+
+  default-language: GHC2021
+  default-extensions:
+    BlockArguments
+    DerivingStrategies
+    DuplicateRecordFields
+    LambdaCase
+    NoFieldSelectors
+    OverloadedRecordDot
+    OverloadedStrings
+    PatternSynonyms
+    RecordWildCards
+
+  build-depends: base >=4.7 && <5
+
+library
+  import: defaults
+  hs-source-dirs: src
+  -- cabal-gild: discover src --exclude=src/**/Internal.hs --exclude=src/**/Internal/**/*.hs
+  exposed-modules:
+    Network.Mqtt.Client
+    Network.Mqtt.Codec
+    Network.Mqtt.Connection
+    Network.Mqtt.Connection.TCP
+    Network.Mqtt.Exception
+    Network.Mqtt.Message
+    Network.Mqtt.Types
+    Network.Mqtt.Types.Packet
+    Network.Mqtt.Types.PacketId
+    Network.Mqtt.Types.Property
+    Network.Mqtt.Types.QoS
+    Network.Mqtt.Types.ReasonCode
+    Network.Mqtt.Types.Topic
+    Network.Mqtt.Types.Will
+
+  -- cabal-gild: discover src --include=src/**/Internal.hs --include=src/**/Internal/**/*.hs
+  other-modules:
+    Network.Mqtt.Client.Internal
+    Network.Mqtt.Codec.Decode.Internal
+    Network.Mqtt.Codec.Encode.Internal
+    Network.Mqtt.Codec.Parser.Internal
+    Network.Mqtt.Codec.Wire.Internal
+    Network.Mqtt.Connection.Internal
+
+  build-depends:
+    async,
+    bytestring,
+    containers,
+    list-t,
+    network,
+    stm,
+    stm-containers,
+    text,
+    time,
+
+test-suite hasquitto-core-test
+  import: defaults
+  type: exitcode-stdio-1.0
+  main-is: Test.hs
+  hs-source-dirs: test
+  -- cabal-gild: discover test --exclude=test/Test.hs
+  other-modules:
+  ghc-options:
+    -threaded
+    -O2
+    -rtsopts
+    -with-rtsopts=-N
+
+  build-depends:
+    bytestring,
+    falsify,
+    hasquitto-core,
+    tasty,
+    tasty-hunit,
+    text,
+
+test-suite hasquitto-core-integration
+  import: defaults
+  type: exitcode-stdio-1.0
+  main-is: Integration.hs
+  hs-source-dirs: test-integration
+  -- cabal-gild: discover test-integration --exclude=test-integration/Integration.hs
+  other-modules:
+  ghc-options:
+    -threaded
+    -rtsopts
+    -with-rtsopts=-N
+
+  build-depends:
+    bytestring,
+    hasquitto-core,
+    tasty,
+    tasty-hunit,
+    text,
+    time,
