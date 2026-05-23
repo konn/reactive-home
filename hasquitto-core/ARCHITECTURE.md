@@ -48,8 +48,7 @@ IO-free; (c)+(d) introduce IO and concurrency.
 `base`/`bytestring`/`text`. They could later move into a `hasquitto-types` package
 (mirroring the `http-types` / `http-client` division) by relocating the
 directories and adding a dependency — with zero import-path churn, because the
-module names are stable. `-Wunused-packages` guards the boundary: an accidental
-IO dependency creeping into the vocabulary layer breaks the build.
+module names are stable.
 
 ## Key decisions & rationale
 
