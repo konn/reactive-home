@@ -29,11 +29,11 @@ jobs:
       tests: ${{steps.list-bins.outputs.tests}}
       artifact: "artifact-${{matrix.plan.name}}"
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v6
       with:
         ref: ${{github.event.pull_request.head.sha || github.sha}}
     - name: Calculate hash keys
-      uses: actions/github-script@v6
+      uses: actions/github-script@v9
       id: cache-keys
       with:
         script: |
@@ -47,13 +47,13 @@ jobs:
         cabal-version: ${{env.cabal-version}}
         ghc-version: ${{env.ghc}}
     - name: Restore ~/.cabal/store
-      uses: actions/cache/restore@v3
+      uses: actions/cache/restore@v5
       with:
         path: ~/.cabal/store
         key: ${{steps.cache-keys.outputs.store}}
         restore-keys: ${{steps.cache-keys.outputs.store-restore}}
     - name: Restore dist-newstyle
-      uses: actions/cache/restore@v3
+      uses: actions/cache/restore@v5
       with:
         path: dist-newstyle
         key: ${{steps.cache-keys.outputs.dist}}
@@ -66,7 +66,7 @@ jobs:
       run: | 
         ${{env.cabal}} build --only-dependencies all
     - name: Save ~/.cabal/store Cache
-      uses: actions/cache/save@v3
+      uses: actions/cache/save@v5
       with:
         path: ~/.cabal/store
         key: ${{steps.cache-keys.outputs.store}}
@@ -74,7 +74,7 @@ jobs:
       run: | 
         ${{env.cabal}} build all
     - name: Save dist-newstyle Cache
-      uses: actions/cache/save@v3
+      uses: actions/cache/save@v5
       with:
         path: dist-newstyle
         key: ${{steps.cache-keys.outputs.dist}}
@@ -83,7 +83,7 @@ jobs:
       continue-on-error: true
       run: bash ./ci/scripts/collect-bins.sh "${{env.artifact-name}}"
     - name: Upload Aritracts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v7
       with:
         path: ${{env.artifact-name}}.tar.zst
         name: ${{env.artifact-name}}
@@ -134,12 +134,12 @@ jobs:
       - name: Fail when Corresponding Build didn't succeed
         if: ${{needs.build.result != 'success' }}
         run: echo "BUILD FAILED" >&2; exit 1
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
         with:
           ref: ${{github.event.pull_request.head.sha || github.sha}}
       - name: Download artifacts
         id: download
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v8
       - name: Decompress
         run: tar xaf ${{env.artifact}}/${{env.artifact}}.tar.zst
       - name: Wait for the MQTT broker
@@ -199,8 +199,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # Note that you must checkout your code before running fourmolu/fourmolu-action
-      - uses: actions/checkout@v2
-      - uses: fourmolu/fourmolu-action@v10
+      - uses: actions/checkout@v6
+      - uses: fourmolu/fourmolu-action@v12
         with:
           pattern: |
             **/*.hs
@@ -212,7 +212,7 @@ jobs:
     name: Cabal Check
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v6
     - uses: haskell-actions/setup@v2
       with:
         cabal-version: 3.10.2.0
