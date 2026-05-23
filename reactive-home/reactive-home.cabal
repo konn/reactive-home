@@ -1,0 +1,116 @@
+cabal-version: 3.4
+name: reactive-home
+version: 0.1.0.0
+description: Please see the README on GitHub at <https://github.com/konn/reactive-home#readme>
+homepage: https://github.com/konn/reactive-home#readme
+bug-reports: https://github.com/konn/reactive-home/issues
+author: Hiromi ISHII
+maintainer: konn.jinro_at_gmail.com
+copyright: (c) Hiromi ISHII 2026- present
+license: BSD-3-Clause
+license-file: LICENSE
+build-type: Simple
+tested-with:
+  ghc ==9.12.4
+
+extra-doc-files:
+  CHANGELOG.md
+  README.md
+
+source-repository head
+  type: git
+  location: https://github.com/konn/reactive-home
+  subdir: reactive-home
+
+common defaults
+  other-modules: Paths_reactive_home
+  autogen-modules: Paths_reactive_home
+  ghc-options:
+    -Wall
+    -Wcompat
+    -Widentities
+    -Wincomplete-record-updates
+    -Wincomplete-uni-patterns
+    -Wmissing-export-lists
+    -Wmissing-home-modules
+    -Wpartial-fields
+    -Wredundant-constraints
+    -Wunused-packages
+
+  build-depends: base >=4.7 && <5
+  default-language: GHC2021
+  default-extensions:
+    BlockArguments
+    DataKinds
+    FlexibleContexts
+    FlexibleInstances
+    GeneralizedNewtypeDeriving
+    MultiParamTypeClasses
+    RankNTypes
+    TypeFamilies
+    TypeOperators
+
+library
+  import: defaults
+  hs-source-dirs: src
+  -- cabal-gild: discover src --exclude=src/**/Internal.hs --exclude=src/**/Internal/**/*.hs
+  exposed-modules:
+    Home.Reactive
+    Home.Reactive.MQTT
+    Home.Reactive.Orphans
+
+  -- cabal-gild: discover src --include=src/**/Internal.hs --include=src/**/Internal/**/*.hs
+  other-modules:
+  build-depends:
+    aeson,
+    bytestring,
+    conduit,
+    effectful,
+    generic-deriving,
+    generic-lens,
+    lens,
+    monad-schedule,
+    mtl,
+    net-mqtt,
+    net-mqtt-lens,
+    net-mqtt-rpc,
+    network,
+    network-uri,
+    rhine,
+    stm,
+    stm-chans,
+    streaming,
+    text,
+    time,
+    transformers,
+    unordered-containers,
+    uuid,
+    vector,
+
+executable reactive-home
+  import: defaults
+  hs-source-dirs: app
+  main-is: Main.hs
+  -- cabal-gild: discover app --exclude=app/Main.hs
+  other-modules:
+  ghc-options:
+    -threaded
+    -rtsopts
+    -with-rtsopts=-N
+
+  build-depends: reactive-home
+
+test-suite reactive-home-test
+  import: defaults
+  type: exitcode-stdio-1.0
+  main-is: Test.hs
+  hs-source-dirs: test
+  -- cabal-gild: discover test --exclude=test/Test.hs
+  other-modules:
+  ghc-options:
+    -threaded
+    -O2
+    -rtsopts
+    -with-rtsopts=-N
+
+  build-depends: reactive-home
