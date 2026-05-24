@@ -98,6 +98,13 @@ test-suite hasquitto-core-test
   hs-source-dirs: test
   -- cabal-gild: discover test --exclude=test/Test.hs
   other-modules:
+    Network.Mqtt.CodecTest
+    Network.Mqtt.Types.ReasonCodeTest
+    Network.Mqtt.Types.TopicTest
+
+  build-tool-depends:
+    tasty-discover:tasty-discover
+
   ghc-options:
     -threaded
     -O2
