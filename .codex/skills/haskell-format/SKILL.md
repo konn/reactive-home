@@ -1,14 +1,14 @@
 ---
 name: haskell-format
 description: |
-  Use to format Haskell source files, including *.hs, *.lhs, and *.hsig, with the project's configured formatter: fourmolu, ormolu, or stylish-haskell. Use before compiling and after source edits.
+  Format Haskell source files: *.hs, *.lhs, and *.hsig, with the project's configured formatter: fourmolu, ormolu, or stylish-haskell. Use before compiling, after source edits, and when applying project style.
 ---
 
-# Haskell Source Formatting
+# Format Haskell Source
 
-Format Haskell source files before compiling. Cabal/project files are handled by the `haskell-cabal-gild` skill.
+Format Haskell source files with the project's formatter. `.cabal` and `cabal.project*` files are handled by the `haskell-cabal-gild` skill. Always format before compiling.
 
-## Choosing A Formatter
+## Choosing The Formatter
 
 Walk up from the file's directory and choose by project config:
 
@@ -30,8 +30,8 @@ stylish-haskell -i <file>
 
 ## Project Automation
 
-This repository has a Codex `PostToolUse` hook in `.codex/hooks.json` that runs `.codex/hooks/haskell-format-post-tool-use.sh` after `apply_patch` edits. Re-read files if the hook reports that it changed them.
+This repository has a Codex `PostToolUse` hook in `.codex/hooks.json` that runs `.codex/hooks/haskell-format-post-tool-use.sh` after `apply_patch` edits. The hook formats changed `.hs`, `.lhs`, and `.hsig` files. Re-read files if the hook reports that it changed them.
 
 ## Companion
 
-Format `.cabal` and `cabal.project` files with the `haskell-cabal-gild` skill.
+Format `.cabal` and `cabal.project*` files with the `haskell-cabal-gild` skill.

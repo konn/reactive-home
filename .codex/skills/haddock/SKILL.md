@@ -1,58 +1,79 @@
 ---
 name: haddock
 description: |
-  Use to read Haskell package documentation, Haddock HTML, Hackage pages, or dependency source for cabal nix-style projects. Prefer locally built/cached docs and source from the cabal store, dist-newstyle, plan.json, and repo-cache; fall back to Hackage only for packages outside the project dependency set or when local docs are unavailable.
+  Read Haskell package documentation, Haddock HTML, Hackage pages, or dependency source for cabal nix-style projects. Prefer locally built/cached docs and source from the cabal store, dist-newstyle, plan.json, and repo-cache; fall back to Hackage only for packages outside the project dependency set or when local docs are unavailable.
 ---
 
-# Haddock And Hackage Lookup
+# Haskell Haddock And Source Reader
 
-Read dependency documentation and source for cabal nix-style projects, preferring local files over network access.
+Read documentation and source code for dependencies of a cabal nix-style project, preferring local files over the network. Exhaust local sources before fetching from Hackage.
 
-## Source Selection
+## Which Source To Use
 
-- If the package is in the current cabal project dependency plan, read it locally.
-- If the package is outside the dependency set or local docs are absent, fall back to Hackage.
-- Prefer the `hoogle` skill for symbol/type search before fetching full documentation pages.
+- Package is a dependency of the current project: read locally.
+- Package is outside the project's dependency set: fall back to Hackage.
+- Prefer the `hoogle` skill for symbol or type lookup before fetching full documentation pages.
 
-## Local Setup
+## One-Time Setup
 
-If docs are missing, enable documentation and build once:
+If local docs are missing, enable documentation and build once after dependency changes:
 
 ```sh
 cabal configure --enable-documentation
 cabal build all
 ```
 
-Use `cabal path --output-format=json` to find:
+## Resolving A Dependency
 
-- `compiler.store-path`, which contains built packages and HTML docs.
-- `remote-repo-cache`, which contains downloaded Hackage source tarballs.
-
-## Resolving Dependencies
-
-1. Read `dist-newstyle/cache/plan.json`.
-2. Find the entry in `install-plan[]` for the package.
-3. Use its `id` as the exact unit id. Do not construct store paths from the package name, because cabal abbreviates and hashes store entries.
-4. Note `pkg-name`, `pkg-version`, and `pkg-src.type`.
-
-## Hackage Or Stackage Packages
-
-For `pkg-src.type = repo-tar`:
-
-- HTML docs are under `<compiler-store-path>/<UnitId>/share/doc/**/html/index.html`.
-- Module pages usually replace `.` with `-`, such as `System.Random.SplitMix` to `System-Random-SplitMix.html`.
-- Source tarballs are under `<remote-repo-cache>/hackage.haskell.org/<pkg-name>/<pkg-version>/<pkg-name>-<pkg-version>.tar.gz`.
-
-List or stream tarball contents without unpacking the whole archive:
+Run the bundled resolver from the project root:
 
 ```sh
-tar -tzf <tarball>
-tar -xzOf <tarball> <pkg>-<ver>/<path/to/File.hs>
+.codex/skills/haddock/scripts/locate-dep.sh <package>
 ```
 
-## Source Repo Or Local Packages
+The resolver regenerates the build plan, reads cabal's store and repo-cache paths, looks up the package's exact `UnitId` in `dist-newstyle/cache/plan.json`, and prints JSON:
 
-For `pkg-src.type = source-repo` or `local`, inspect files under `dist-newstyle/src/` or the local package path from `cabal.project`.
+```json
+{
+  "store_path": "<cabal-store>/<UnitId>",
+  "doc_dir": "<store_path>/share/doc/html",
+  "source": "<repo-cache>/.../<pkg>-<ver>.tar.gz"
+}
+```
+
+- `store_path` is the resolved unit directory in the cabal store.
+- `doc_dir` is the Haddock HTML directory, or `null` if docs were not built.
+- `source` is a Hackage/Stackage source tarball path, source-repository-package metadata, or `null`.
+
+Do not construct store paths from package names. Cabal abbreviates and hashes store entries, so use the resolved `UnitId`.
+
+## Reading Docs
+
+When `doc_dir` is non-null, module pages sit directly inside it. A module page is its dotted name with `.` replaced by `-` plus `.html`, for example `System.Random.SplitMix` becomes `System-Random-SplitMix.html`. Use `index.html` or list `*.html` files if the module name is uncertain.
+
+## Reading Source
+
+For a string tarball path, stream a single file without unpacking everything:
+
+```sh
+tar -tzf <source>
+tar -xzOf <source> <pkg>-<ver>/<path/to/File.hs>
+```
+
+For a source-repository-package object, use its `{ type, location, tag, subdir }` metadata. Cabal checks the repo out under `dist-newstyle/src/` in a directory named from the repo plus a content hash, not from the tag. Locate the source with a glob such as:
+
+```text
+dist-newstyle/src/*/<subdir>/**/*.hs
+```
+
+Drop `/<subdir>` when absent or `"."`. If multiple checkouts match, pick the one whose `git rev-parse HEAD` matches `git rev-parse "<tag>^{commit}"` inside that checkout.
+
+## Resolver Misses
+
+If the resolver prints `null` or exits non-zero, the package is not in the cabal store. Common cases:
+
+- GHC boot libraries such as `base`, `ghc-prim`, `containers`, and `template-haskell` ship docs with the compiler. Use `ghc-pkg-<ver> field <pkg> haddock-html`, deriving `<ver>` and the matching `ghc-pkg` path from `cabal path --output-format=json`.
+- Local packages should be read directly from their path in `cabal.project`.
 
 ## Hackage Fallback
 
@@ -62,3 +83,5 @@ Use Hackage only when local lookup is not available:
 https://hackage.haskell.org/package/<pkg>
 https://hackage.haskell.org/package/<pkg>-<ver>/docs/<Module-With-Dashes>.html
 ```
+
+If `doc_dir` is `null` for a real dependency, `documentation: True` is probably missing or `cabal build all` has not run since the dependency was added. Redo setup, then rerun the resolver.

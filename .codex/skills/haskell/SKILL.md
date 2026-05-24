@@ -1,46 +1,55 @@
 ---
 name: haskell
 description: |
-  Use for Haskell development in this project: editing .hs/.lhs/.hsig/.cabal/package.yaml/cabal.project files, typechecking or building with cabal, fixing compiler errors, changing dependencies, or looking up Haskell APIs. Prefer cabal nix-style builds, package-by-package validation, HLS diagnostics when available, local docs, Haddock, and Hoogle.
+  Super-skill for developing Haskell projects with cabal nix-style builds. Orchestrates HLS diagnostics, Haddock, Hoogle, source formatting, and cabal-gild into one workflow. Use when writing, editing, refactoring, building, typechecking, fixing compiler errors, renaming symbols, looking up APIs, or changing dependencies in Haskell projects. Treat cabal.project as the source of truth, prefer HLS before full builds, and prefer local docs over remote lookup.
 ---
 
-# Haskell Development
+# Haskell Development Super-Skill
 
-This project uses cabal nix-style builds. Treat `cabal.project` and package `.cabal` files as the source of truth.
+This is the entry point for Haskell development in this repository. It coordinates the migrated Codex skills from the enabled Claude plugins in `.claude/settings.json`:
+
+- `haskell-skill@konn-haskell-claude-tools` maps to this skill.
+- `hoogle@claude-hoogle` maps to `.codex/skills/hoogle`.
+- Haddock dependency documentation lookup maps to `.codex/skills/haddock`.
+- Claude hook-based formatting maps to `.codex/skills/haskell-format`, `.codex/skills/haskell-cabal-gild`, `.codex/hooks.json`, and `.codex/hooks/`.
+- The Claude HLS plugin maps to this workflow instruction: prefer HLS when available. Codex does not consume `.lsp.json` as a skill.
 
 ## Ground Rules
 
-- Use `cabal`, not `stack`, and do not invoke `ghc` directly for normal validation.
-- In this multi-package project, build one package at a time with `cabal build <pkg>` before moving to another package.
-- Format changed Haskell source with the `haskell-format` skill before building.
-- Format changed `.cabal` and `cabal.project` files with the `haskell-cabal-gild` skill before building.
-- Prefer `(<>)` over `(++)` for concatenation, including strings and lists.
-- After editing `package.yaml`, run `hpack` to regenerate the corresponding `.cabal` file.
+- Use cabal nix-style builds. `cabal.project` and `cabal.project.local` are the source of truth.
+- Do not use `stack` or invoke `ghc` directly for normal validation.
+- In a multi-package project, work on and build one package at a time with `cabal build <pkg>`. Get it green before moving to another package.
+- Format changed `.hs`, `.lhs`, and `.hsig` files with the `haskell-format` skill before compiling.
+- Format changed `.cabal`, `cabal.project`, `cabal.project.local`, and `cabal.project.freeze` files with the `haskell-cabal-gild` skill before compiling.
+- Prefer `(<>)` over `(++)` for all concatenation, including lists and strings.
+- After editing any `package.yaml`, run `hpack` to regenerate the corresponding `.cabal` file.
 
 ## Workflow
 
 1. Inspect the relevant package and existing conventions before editing.
-2. Edit the smallest reasonable surface.
-3. Use HLS diagnostics, hover/types, definitions, references, or rename when available before running a full build.
-4. Look up APIs as needed:
-   - Prefer local Haddock or installed package docs when available.
-   - Use the project-local `haddock` skill for dependency docs or source.
-   - Use the project-local `hoogle` skill or local `hoogle` command for name/type search.
+2. Edit the smallest reasonable surface and format changed files.
+3. Use HLS diagnostics, hover/types, go-to-definition, references, or rename when available before running a full build.
+4. Look up APIs as needed, preferring local information:
+   - Use the `haddock` skill for local Haddock docs and dependency source.
+   - Use the `hoogle` skill for name or type-signature search.
    - Use remote Hoogle or Hackage only when local search is insufficient.
 5. Build with `cabal build <pkg>` once quick diagnostics are clean or unavailable.
 6. Test with `cabal test <pkg>` or the specific test target relevant to the change.
 
 ## Dependency Changes
 
-- Edit `.cabal`, `package.yaml`, or `cabal.project` according to the project’s current layout.
+- Edit `.cabal`, `package.yaml`, or `cabal.project` according to the project layout.
 - Run `hpack` after `package.yaml` edits.
-- Reformat cabal/project files.
-- Run `cabal build <pkg>` for affected packages; run `cabal build all` only when a dependency or build-plan change needs broad validation or refreshed local docs.
+- Reformat cabal/project files with `haskell-cabal-gild`.
+- Run `cabal build <pkg>` for affected packages.
+- Run `cabal build all` only when a dependency or build-plan change needs broad validation or refreshed local docs.
 
-## Migrated Claude Plugins
+## Companion Tools
 
-- `haskell-skill@konn-haskell-claude-tools` maps to this skill.
-- `hoogle@claude-hoogle` maps to `.codex/skills/hoogle`.
-- Haddock/Hackage documentation lookup maps to `.codex/skills/haddock`.
-- Claude hook-based formatting maps to the `haskell-format` and `haskell-cabal-gild` skills plus real Codex hooks in `.codex/hooks.json` and `.codex/hooks/`.
-- The Claude HLS plugin maps to this workflow instruction: prefer HLS when available. Codex does not consume `.lsp.json` as a skill.
+| Need | Use |
+| --- | --- |
+| Typecheck, types, definitions, references, rename | HLS when available |
+| Format `.hs`, `.lhs`, `.hsig` sources | `haskell-format` |
+| Format `.cabal` and `cabal.project*` files | `haskell-cabal-gild` |
+| Read dependency docs or source | `haddock` |
+| Find a function by name or type | `hoogle` |

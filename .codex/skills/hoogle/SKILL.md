@@ -1,43 +1,112 @@
 ---
 name: hoogle
 description: |
-  Use to search Hoogle for Haskell functions, type signatures, packages, modules, and documentation. Trigger when a task needs Haskell API discovery, signature lookup, or a function by type/name.
+  Search Haskell APIs using Hoogle. Use when working with Haskell projects to look up function signatures, find functions by type, discover library documentation, or identify which module exports an item.
 ---
 
-# Hoogle Search
+# Hoogle API Search
 
-Use Hoogle to find Haskell APIs by name, type signature, package, or module.
+Hoogle is a Haskell API search engine. Use it to find functions by name or by type signature.
 
-## Preferred Procedure
+## When To Use Hoogle
 
-1. Start with a local Hoogle command if available:
+Use Hoogle when:
 
-   ```sh
-   hoogle '<query>'
-   ```
+- Working with Haskell code and needing to find a function.
+- Looking up a type signature.
+- Searching for functions that match a type signature, such as `a -> b -> a`.
+- Finding which module exports a particular function.
+- Looking up documentation for Haskell functions.
 
-   If `hoogle` is not on `PATH`, try `/Users/hiromi/.cabal/bin/hoogle`.
+## Search Methods
 
-2. For remote lookup, query Hoogle’s JSON endpoint:
+Search by function name:
 
-   ```text
-   https://hoogle.haskell.org/?hoogle=<URL_ENCODED_QUERY>&mode=json
-   ```
+```sh
+.codex/skills/hoogle/scripts/hoogle-search.sh "map"
+```
 
-3. Return the most relevant results, usually the top 5 to 10.
+Search by type signature:
 
-## Result Format
+```sh
+.codex/skills/hoogle/scripts/hoogle-search.sh "a -> b -> a"
+```
 
-For each useful result, include:
+Search with a package filter:
 
-- Function or item name and cleaned signature.
-- Package and module.
-- A short documentation summary.
-- Documentation URL when available.
+```sh
+.codex/skills/hoogle/scripts/hoogle-search.sh "+base map"
+.codex/skills/hoogle/scripts/hoogle-search.sh "+containers Data.Map.lookup"
+```
 
-Strip HTML tags and decode common entities such as `&gt;`, `&lt;`, and `&amp;` before presenting results.
+Get detailed information for the first result:
 
-## Failure Cases
+```sh
+.codex/skills/hoogle/scripts/hoogle-search.sh "foldl" --info
+```
 
-- If there are no results, say so and suggest a broader name or a type-signature query.
-- If remote lookup fails, report the failure and suggest visiting `https://hoogle.haskell.org` directly.
+Remote search is available when local search is unavailable or insufficient:
+
+```sh
+.codex/skills/hoogle/scripts/hoogle-remote.sh "map"
+```
+
+## Result Shape
+
+The search scripts return JSON:
+
+```json
+{
+  "results": [
+    {
+      "url": "https://hackage.haskell.org/package/base/docs/Prelude.html#v:map",
+      "module": { "name": "Prelude", "url": "..." },
+      "package": { "name": "base", "url": "..." },
+      "item": "map :: (a -> b) -> [a] -> [b]",
+      "docs": "..."
+    }
+  ],
+  "query": "map",
+  "count": 10
+}
+```
+
+Key fields are `item`, `docs`, `module.name`, and `package.name`.
+
+## Database Initialization
+
+Before local searching, ensure the Hoogle database exists:
+
+```sh
+.codex/skills/hoogle/scripts/hoogle-init-db.sh
+```
+
+For project-specific searches, generate a local database from Haddock docs:
+
+```sh
+.codex/skills/hoogle/scripts/hoogle-init-db.sh --local /path/to/haddock/docs
+```
+
+## Common Search Patterns
+
+| Goal | Query Example |
+| --- | --- |
+| Find function by name | `filter` |
+| Find by exact type | `(a -> Bool) -> [a] -> [a]` |
+| Find in specific package | `+lens view` |
+| Find class methods | `Monad m => m a -> m b` |
+| Find by partial type | `Map k v -> k -> Maybe v` |
+
+## Error Handling
+
+If searches fail with database errors, regenerate the database:
+
+```sh
+.codex/skills/hoogle/scripts/hoogle-init-db.sh --force
+```
+
+If local search cannot work, use remote search or Hoogle's JSON endpoint:
+
+```text
+https://hoogle.haskell.org/?hoogle=<URL_ENCODED_QUERY>&mode=json
+```
