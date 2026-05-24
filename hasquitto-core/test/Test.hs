@@ -26,6 +26,7 @@ main =
       [ roundTrips
       , topicMatching
       , compactForms
+      , reasonCodeShow
       , negativeCases
       ]
 
@@ -72,6 +73,18 @@ compactForms =
     , testCase "empty AUTH body means Success" $
         decodeFrame (BS.pack [0xF0, 0x00])
           @?= Right (Auth (AuthPacket Success []), BS.empty)
+    ]
+
+reasonCodeShow :: TestTree
+reasonCodeShow =
+  testGroup
+    "reason code Show"
+    [ testCase "known reason codes use their pattern synonym names" $
+        show ProtocolError @?= "ProtocolError"
+    , testCase "0x00 uses the first declared name" $
+        show Success @?= "Success"
+    , testCase "unknown reason codes keep the raw constructor form" $
+        show (ReasonCode 0x03) @?= "ReasonCode {unReasonCode = 3}"
     ]
 
 negativeCases :: TestTree

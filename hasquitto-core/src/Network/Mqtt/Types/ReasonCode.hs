@@ -61,7 +61,63 @@ provided as pattern synonyms. A value @< 0x80@ is a success/normal code, @>= 0x8
 is an error (§2.4).
 -}
 newtype ReasonCode = ReasonCode {unReasonCode :: Word8}
-  deriving stock (Show, Eq, Ord)
+  deriving stock (Eq, Ord)
+
+instance Show ReasonCode where
+  showsPrec _ (ReasonCode w)
+    | Just name <- reasonCodeName w = showString name
+  showsPrec d (ReasonCode w) =
+    showParen (d > 10) $
+      showString "ReasonCode {unReasonCode = "
+        . shows w
+        . showString "}"
+
+reasonCodeName :: Word8 -> Maybe String
+reasonCodeName = \case
+  0x00 -> Just "Success"
+  0x01 -> Just "GrantedQoS1"
+  0x02 -> Just "GrantedQoS2"
+  0x04 -> Just "DisconnectWithWillMessage"
+  0x10 -> Just "NoMatchingSubscribers"
+  0x11 -> Just "NoSubscriptionExisted"
+  0x18 -> Just "ContinueAuthentication"
+  0x19 -> Just "ReAuthenticate"
+  0x80 -> Just "UnspecifiedError"
+  0x81 -> Just "MalformedPacket"
+  0x82 -> Just "ProtocolError"
+  0x83 -> Just "ImplementationSpecificError"
+  0x84 -> Just "UnsupportedProtocolVersion"
+  0x85 -> Just "ClientIdentifierNotValid"
+  0x86 -> Just "BadUserNameOrPassword"
+  0x87 -> Just "NotAuthorized"
+  0x88 -> Just "ServerUnavailable"
+  0x89 -> Just "ServerBusy"
+  0x8A -> Just "Banned"
+  0x8B -> Just "ServerShuttingDown"
+  0x8C -> Just "BadAuthenticationMethod"
+  0x8D -> Just "KeepAliveTimeout"
+  0x8E -> Just "SessionTakenOver"
+  0x8F -> Just "TopicFilterInvalid"
+  0x90 -> Just "TopicNameInvalid"
+  0x91 -> Just "PacketIdentifierInUse"
+  0x92 -> Just "PacketIdentifierNotFound"
+  0x93 -> Just "ReceiveMaximumExceeded"
+  0x94 -> Just "TopicAliasInvalid"
+  0x95 -> Just "PacketTooLarge"
+  0x96 -> Just "MessageRateTooHigh"
+  0x97 -> Just "QuotaExceeded"
+  0x98 -> Just "AdministrativeAction"
+  0x99 -> Just "PayloadFormatInvalid"
+  0x9A -> Just "RetainNotSupported"
+  0x9B -> Just "QoSNotSupported"
+  0x9C -> Just "UseAnotherServer"
+  0x9D -> Just "ServerMoved"
+  0x9E -> Just "SharedSubscriptionsNotSupported"
+  0x9F -> Just "ConnectionRateExceeded"
+  0xA0 -> Just "MaximumConnectTime"
+  0xA1 -> Just "SubscriptionIdentifiersNotSupported"
+  0xA2 -> Just "WildcardSubscriptionsNotSupported"
+  _ -> Nothing
 
 -- | Is this a success/normal reason code (@< 0x80@)?
 isSuccess :: ReasonCode -> Bool
