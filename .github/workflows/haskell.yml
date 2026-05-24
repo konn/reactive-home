@@ -124,9 +124,10 @@ jobs:
       artifact: artifact-${{matrix.plan.name}}
     runs-on: ubuntu-latest
     services:
-      # MQTT broker for the hasquitto-core integration suite. mosquitto 2.x
-      # refuses remote/anonymous access without a config, so we override the
-      # entrypoint to write a minimal anonymous-listener config and exec it.
+      # MQTT broker for the integration suites (hasquitto-core and
+      # hasquitto-auto-reconnect). mosquitto 2.x refuses remote/anonymous access
+      # without a config, so we override the entrypoint to write a minimal
+      # anonymous-listener config and exec it.
       mqtt:
         image: eclipse-mosquitto:2.0.18
         ports:
@@ -164,9 +165,10 @@ jobs:
       - name: Run Tests
         shell: bash
         env:
-          # Point the hasquitto-core integration suite at the service container
-          # (its --mqtt-host / --mqtt-port options). Use 127.0.0.1 to avoid any
-          # localhost->::1 ambiguity; other test suites ignore these.
+          # Point the integration suites (hasquitto-core, hasquitto-auto-reconnect)
+          # at the service container via their --mqtt-host / --mqtt-port options
+          # (tasty maps these env vars to the options). Use 127.0.0.1 to avoid any
+          # localhost->::1 ambiguity; the unit suites ignore them.
           TASTY_MQTT_HOST: 127.0.0.1
           TASTY_MQTT_PORT: "1883"
         run: |

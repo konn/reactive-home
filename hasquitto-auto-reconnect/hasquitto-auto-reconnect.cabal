@@ -1,0 +1,122 @@
+cabal-version: 3.4
+name: hasquitto-auto-reconnect
+version: 0.1.0.0
+description: Please see the README on GitHub at <https://github.com/konn/reactive-home/hasquitto-auto-reconnect#readme>
+homepage: https://github.com/konn/reactive-home#readme
+bug-reports: https://github.com/konn/reactive-home/issues
+author: Hiromi ISHII
+maintainer: konn.jinro_at_gmail.com
+copyright: (c) Hiromi ISHII 2026- present
+license: BSD-3-Clause
+license-file: LICENSE
+build-type: Simple
+tested-with:
+  ghc ==9.12.4
+
+extra-doc-files:
+  CHANGELOG.md
+  README.md
+
+source-repository head
+  type: git
+  location: https://github.com/konn/reactive-home
+  subdir: hasquitto-auto-reconnect
+
+common defaults
+  autogen-modules: Paths_hasquitto_auto_reconnect
+  other-modules: Paths_hasquitto_auto_reconnect
+  ghc-options:
+    -Wall
+    -Wcompat
+    -Widentities
+    -Wincomplete-record-updates
+    -Wincomplete-uni-patterns
+    -Wmissing-export-lists
+    -Wmissing-home-modules
+    -Wpartial-fields
+    -Wredundant-constraints
+    -Wunused-packages
+
+  default-language: GHC2021
+  default-extensions:
+    BlockArguments
+    DerivingStrategies
+    DuplicateRecordFields
+    LambdaCase
+    NoFieldSelectors
+    OverloadedRecordDot
+    OverloadedStrings
+    PatternSynonyms
+    RecordWildCards
+
+  build-depends: base >=4.7 && <5
+
+library
+  import: defaults
+  hs-source-dirs: src
+  -- cabal-gild: discover src --exclude=src/**/Internal.hs --exclude=src/**/Internal/**/*.hs
+  exposed-modules: Network.Mqtt.Client.AutoReconnect
+  -- cabal-gild: discover src --include=src/**/Internal.hs --include=src/**/Internal/**/*.hs
+  other-modules: Network.Mqtt.Client.AutoReconnect.Internal
+  build-depends:
+    async,
+    bytestring,
+    containers,
+    hasquitto-core,
+    random,
+    safe-exceptions,
+    stm,
+
+test-suite hasquitto-auto-reconnect-test
+  import: defaults
+  type: exitcode-stdio-1.0
+  main-is: Test.hs
+  -- White-box: compile the internal module straight from src so the pure helpers
+  -- (backoff bound, registry update) are testable without exposing them publicly.
+  hs-source-dirs:
+    test
+    src
+
+  other-modules:
+    Network.Mqtt.Client.AutoReconnect.Internal
+
+  ghc-options:
+    -threaded
+    -O2
+    -rtsopts
+    -with-rtsopts=-N
+
+  build-depends:
+    async,
+    bytestring,
+    containers,
+    falsify,
+    hasquitto-core,
+    random,
+    safe-exceptions,
+    stm,
+    tasty,
+    tasty-hunit,
+
+test-suite hasquitto-auto-reconnect-integration
+  import: defaults
+  type: exitcode-stdio-1.0
+  main-is: Integration.hs
+  hs-source-dirs: test-integration
+  -- cabal-gild: discover test-integration --exclude=test-integration/Integration.hs
+  other-modules:
+  ghc-options:
+    -threaded
+    -rtsopts
+    -with-rtsopts=-N
+
+  build-depends:
+    async,
+    bytestring,
+    hasquitto-auto-reconnect,
+    hasquitto-core,
+    stm,
+    tasty,
+    tasty-hunit,
+    text,
+    time,

@@ -232,7 +232,9 @@ between "timed out", "result arrived", and "connection closed".
 
 ## Known limitations / future work
 
-- No automatic reconnect driver yet (manual `reconnect` only).
+- `hasquitto-core` itself ships only the manual `reconnect` building block; the
+  automatic reconnect *driver* (with backoff and auto-resubscribe) lives in the
+  sibling `hasquitto-auto-reconnect` package, built on this public API.
 - Only a plain-TCP transport ships; TLS and WebSocket `Connection` backends are
   the obvious next backends (the abstraction already supports them).
 - The pure layers could be split into a separate `hasquitto-types` package.
