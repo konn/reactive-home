@@ -9,7 +9,6 @@ module Network.Mqtt.Client.Internal (
   ConnectOptions (..),
   defaultConnectOptions,
   OverflowPolicy (..),
-  ReconnectPolicy (..),
   TopicAliasMode (..),
   Authenticator (..),
   AuthChallenge (..),
@@ -78,14 +77,6 @@ import System.Timeout (timeout)
 data OverflowPolicy = DropNewest | DropOldest | Block
   deriving stock (Show, Eq)
 
-{- | Reconnect/backoff policy (used by a future auto-reconnect driver; manual
-'reconnect' is always available).
--}
-data ReconnectPolicy = ReconnectPolicy
-  { maxRetries :: !(Maybe Int)
-  , backoff :: !(Int -> Int)
-  }
-
 -- | Outbound Topic Alias policy.
 data TopicAliasMode = NoAliasing | AliasUpTo !Word16
   deriving stock (Show, Eq)
@@ -130,11 +121,10 @@ data ConnectOptions = ConnectOptions
   , topicAliasSending :: !TopicAliasMode
   , receiveQueueBound :: !Int
   , overflowPolicy :: !OverflowPolicy
-  , autoReconnect :: !(Maybe ReconnectPolicy)
   }
 
 {- | Sensible defaults: clean start, 60s keep-alive, no will\/auth, a 1024-deep
-inbound queue, drop-newest QoS-0 overflow, no aliasing or auto-reconnect.
+inbound queue, drop-newest QoS-0 overflow, no aliasing.
 -}
 defaultConnectOptions :: IO Conn -> Text -> ConnectOptions
 defaultConnectOptions factory cid =
@@ -151,7 +141,6 @@ defaultConnectOptions factory cid =
     , topicAliasSending = NoAliasing
     , receiveQueueBound = 1024
     , overflowPolicy = DropNewest
-    , autoReconnect = Nothing
     }
 
 -- | Per-publish options.

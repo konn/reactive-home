@@ -7,7 +7,6 @@ module Network.Mqtt.Client (
   ConnectOptions (..),
   defaultConnectOptions,
   OverflowPolicy (..),
-  ReconnectPolicy (..),
   TopicAliasMode (..),
   Authenticator (..),
   AuthChallenge (..),
