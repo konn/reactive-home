@@ -273,11 +273,12 @@ main = do
             Nothing -> pure ()
             Just sess ->
               (currentSesameStatus (fromSesameConfig sess) >-> arrMCl (liftIO . print))
-      withMqttClient mqttCfg \client _ -> runEff $ runMqtt $ runConcurrent do
-        flow $
-          tagS
-            >-> void
-              ( arrMCl (liftIO . print @MqttMessage)
-                  &&& sesame
-              )
-            @@ newMqttClock client
+      withMqttClient mqttCfg \mqtt sess ->
+        runEff $ runMqttWith mqtt sess $ runConcurrent do
+          flow $
+            tagS
+              >-> void
+                ( arrMCl (liftIO . print @MqttMessage)
+                    &&& sesame
+                )
+              @@ newMqttClock mqtt

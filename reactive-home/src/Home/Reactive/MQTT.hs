@@ -65,13 +65,17 @@ instance {-# OVERLAPPABLE #-} (MonadIO m) => Clock m MqttClock where
           pure (time, msg)
     pure (runningClock, initialTime)
 
-instance {-# OVERLAPS #-} (Mqtt :> es) => Clock (Eff es) MqttClock where
-  type Time MqttClock = UTCTime
-  type Tag MqttClock = Message
-  initClock (MqttClock client) = do
+data EffMqttClock = EffMqttClock
+  deriving stock (Generic)
+  deriving anyclass (GetClockProxy)
+
+instance {-# OVERLAPS #-} (Mqtt :> es) => Clock (Eff es) EffMqttClock where
+  type Time EffMqttClock = UTCTime
+  type Tag EffMqttClock = Message
+  initClock EffMqttClock = do
     initialTime <- unsafeEff_ getCurrentTime
     let runningClock = constM do
-          msg <- EffM.recvMessage client
+          msg <- EffM.recvMessage
           time <- unsafeEff_ getCurrentTime
           pure (time, msg)
     pure (runningClock, initialTime)
