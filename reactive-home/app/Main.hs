@@ -6,6 +6,7 @@
 {-# LANGUAGE DisambiguateRecordFields #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedLabels #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -14,6 +15,7 @@ module Main (main) where
 
 import Control.Applicative ((<**>))
 import Control.Exception (Exception, throwIO)
+import Control.Lens (view)
 import Control.Monad (join)
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Aeson qualified as A
@@ -21,6 +23,7 @@ import Data.ByteString.Lazy qualified as LBS
 import Data.Foldable (forM_, for_)
 import Data.Foldable qualified as F
 import Data.Functor (void, (<&>))
+import Data.Generics.Labels ()
 import Data.HashMap.Strict (HashMap)
 import Data.HashMap.Strict qualified as HM
 import Data.HashSet (HashSet)
@@ -31,11 +34,11 @@ import Data.String (IsString)
 import Data.Text qualified as T
 import Effectful
 import Effectful.Concurrent (runConcurrent)
+import Effectful.Network.Mqtt
+import Effectful.Reader.Static (Reader)
 import FRP.Rhine
 import GHC.Generics (Generic)
 import Home.Reactive.MQTT
-import Network.Mqtt.Client.AutoReconnect (publish)
-import Network.Mqtt.Types
 import Options.Applicative qualified as Opts
 import Toml hiding (first, map)
 
@@ -158,6 +161,17 @@ data ParseResult e a
   | Skipped
   deriving (Show, Eq, Ord, Generic, Functor, Foldable, Traversable)
 
+data Action
+  = LockSesame !T.Text
+  | UnlockSesame !T.Text
+  deriving (Show, Eq, Ord, Generic)
+
+data HomeEnv = HomeEnv
+  { mqtt :: {-# UNPACK #-} !MqttClient
+  , sesame :: {-# UNPACK #-} !SesameEnv
+  }
+  deriving (Generic)
+
 resultToEither :: ParseResult e a -> Either e (Maybe a)
 resultToEither = \case
   ParseSuccess a -> Right (Just a)
@@ -259,7 +273,7 @@ main = do
             Nothing -> pure ()
             Just sess ->
               (currentSesameStatus (fromSesameConfig sess) >-> arrMCl (liftIO . print))
-      withMqttClient mqttCfg \client _ -> runEff $ runConcurrent do
+      withMqttClient mqttCfg \client _ -> runEff $ runMqtt $ runConcurrent do
         flow $
           tagS
             >-> void

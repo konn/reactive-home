@@ -30,6 +30,10 @@ import Data.List.NonEmpty qualified as NE
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (getCurrentTime)
+import Effectful (Eff, (:>))
+import Effectful.Dispatch.Static (unsafeEff_)
+import Effectful.Network.Mqtt (Mqtt)
+import Effectful.Network.Mqtt qualified as EffM
 import FRP.Rhine
 import GHC.Generics (Generic)
 import Network.Mqtt.Client (ConnectOptions (..), Session, defaultConnectOptions)
@@ -58,6 +62,17 @@ instance {-# OVERLAPPABLE #-} (MonadIO m) => Clock m MqttClock where
     let runningClock = constM $ liftIO do
           msg <- recvMessage client
           time <- getCurrentTime
+          pure (time, msg)
+    pure (runningClock, initialTime)
+
+instance {-# OVERLAPS #-} (Mqtt :> es) => Clock (Eff es) MqttClock where
+  type Time MqttClock = UTCTime
+  type Tag MqttClock = Message
+  initClock (MqttClock client) = do
+    initialTime <- unsafeEff_ getCurrentTime
+    let runningClock = constM do
+          msg <- EffM.recvMessage client
+          time <- unsafeEff_ getCurrentTime
           pure (time, msg)
     pure (runningClock, initialTime)
 
