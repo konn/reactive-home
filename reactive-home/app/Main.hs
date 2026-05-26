@@ -15,19 +15,14 @@ module Main (main) where
 
 import Control.Applicative ((<**>))
 import Control.Exception (Exception, throwIO)
-import Control.Lens (view)
-import Control.Monad (join)
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Aeson qualified as A
 import Data.ByteString.Lazy qualified as LBS
-import Data.Foldable (forM_, for_)
 import Data.Foldable qualified as F
 import Data.Functor (void, (<&>))
 import Data.Generics.Labels ()
 import Data.HashMap.Strict (HashMap)
 import Data.HashMap.Strict qualified as HM
-import Data.HashSet (HashSet)
-import Data.HashSet qualified as HS
 import Data.Hashable (Hashable)
 import Data.List.NonEmpty qualified as NE
 import Data.String (IsString)
@@ -35,7 +30,7 @@ import Data.Text qualified as T
 import Effectful
 import Effectful.Concurrent (runConcurrent)
 import Effectful.Network.Mqtt
-import Effectful.Reader.Static (Reader)
+import Effectful.Reader.Static (runReader)
 import FRP.Rhine
 import GHC.Generics (Generic)
 import Home.Reactive.MQTT
@@ -168,7 +163,7 @@ data Action
 
 data HomeEnv = HomeEnv
   { mqtt :: {-# UNPACK #-} !MqttClient
-  , sesame :: {-# UNPACK #-} !SesameEnv
+  , sesame :: {-# UNPACK #-} !(Maybe SesameEnv)
   }
   deriving (Generic)
 
@@ -201,7 +196,7 @@ parseSesameStatus env msg =
               | Just (name, device) <- HM.lookup (UUID uuid) env.uuids ->
                   case A.eitherDecode' $ LBS.fromStrict msg.payload of
                     Left err -> ParseFailure $ InvalidPayload err
-                    Right status -> ParseSuccess (name, device, status)
+                    Right stt -> ParseSuccess (name, device, stt)
               | otherwise -> ParseFailure (UnknownDevice uuid)
             _ -> Skipped
       | otherwise -> Skipped
@@ -219,7 +214,7 @@ sesameStatuses env = proc msg -> do
 
 reportErrors ::
   (Exception e, MonadIO m) =>
-  BehaviourF m t (ParseResult e a) (Maybe a)
+  ClSF m cl (ParseResult e a) (Maybe a)
 reportErrors = arrM $ \case
   ParseFailure err -> do
     liftIO $ putStrLn $ "Error: " <> show err
@@ -230,7 +225,7 @@ reportErrors = arrM $ \case
 currentSesameStatus ::
   (MonadIO m) =>
   SesameEnv ->
-  BehaviourF m t Message (HashMap T.Text SesameStatus)
+  BehaviourF m t Message (HashMap T.Text (t, SesameStatus))
 currentSesameStatus env =
   feedback HM.empty $
     first
@@ -238,7 +233,7 @@ currentSesameStatus env =
       >-> arr \(mmsg, prev) ->
         let new = case mmsg of
               Nothing -> prev
-              Just (time, name, _, status) -> HM.insert name status prev
+              Just (time, name, _, s) -> HM.insert name (time, s) prev
          in (new, new)
 
 main :: IO ()
@@ -269,16 +264,20 @@ main = do
                       , qos = QoS1
                       }
               }
-      let sesame = case config.sesame of
+      let sesame = fromSesameConfig <$> config.sesame
+      let procesSesame = case sesame of
             Nothing -> pure ()
             Just sess ->
-              (currentSesameStatus (fromSesameConfig sess) >-> arrMCl (liftIO . print))
+              (currentSesameStatus sess >-> arrMCl (liftIO . print))
       withMqttClient mqttCfg \mqtt sess ->
-        runEff $ runMqttWith mqtt sess $ runConcurrent do
-          flow $
-            tagS
-              >-> void
-                ( arrMCl (liftIO . print @MqttMessage)
-                    &&& sesame
-                )
-              @@ newMqttClock mqtt
+        runEff $
+          runReader HomeEnv {..} $
+            runMqttWith mqtt sess $
+              runConcurrent do
+                flow $
+                  tagS
+                    >-> void
+                      ( arrMCl (liftIO . print @MqttMessage)
+                          &&& procesSesame
+                      )
+                    @@ newMqttClock mqtt
