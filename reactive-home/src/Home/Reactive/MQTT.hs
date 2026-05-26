@@ -5,26 +5,98 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE NoFieldSelectors #-}
 
-module Home.Reactive.MQTT where
+module Home.Reactive.MQTT (
+  withMqttClient,
+  MqttMessage,
+  MqttClient,
+  MqttSession,
+  MqttClockConfig (..),
+  newMqttClock,
+  MqttClock (..),
+  MqttClockError (..),
 
-import Control.Concurrent.STM qualified as IO
-import Data.Aeson (FromJSON)
-import Data.ByteString qualified as BS
-import Data.ByteString.Lazy qualified as LBS
-import Data.Time (UTCTime, getCurrentTime)
-import Data.Time qualified as IO
-import Effectful
-import Effectful.Concurrent
-import Effectful.Concurrent.STM
-import Effectful.Dispatch.Static (unsafeEff_)
+  -- * Re-exports
+  Topic (..),
+  TopicFilter (..),
+  wildOne,
+  wildMany,
+  fromTopic,
+  Message (..),
+) where
+
+import Control.Exception (Exception, throwIO)
+import Data.List.NonEmpty (NonEmpty)
+import Data.List.NonEmpty qualified as NE
+import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
+import Data.Time (getCurrentTime)
+import FRP.Rhine
 import GHC.Generics (Generic)
-import Network.URI (URI (..), URIAuth (..), escapeURIString, isReserved, isUnescapedInURIComponent)
+import Network.Mqtt.Client (ConnectOptions (..), Session, defaultConnectOptions)
+import Network.Mqtt.Client.AutoReconnect
+import Network.Mqtt.Connection.TCP
+import Network.Mqtt.Message (Message (..))
+import Network.Mqtt.Types.Packet (Subscription)
+import Network.Mqtt.Types.ReasonCode (ReasonCode, isSuccess)
+import Network.Mqtt.Types.Topic
 
-data MQTTSettings = MQTTSettings
-  { hostname :: !String
+newtype MqttClock = MqttClock AutoClient
+  deriving stock (Generic)
+  deriving anyclass (GetClockProxy)
+
+newMqttClock :: MqttClient -> MqttClock
+{-# INLINE newMqttClock #-}
+newMqttClock = MqttClock
+
+type MqttMessage = Message
+
+instance {-# OVERLAPPABLE #-} (MonadIO m) => Clock m MqttClock where
+  type Time MqttClock = UTCTime
+  type Tag MqttClock = Message
+  initClock (MqttClock client) = do
+    initialTime <- liftIO getCurrentTime
+    let runningClock = constM $ liftIO do
+          msg <- recvMessage client
+          time <- getCurrentTime
+          pure (time, msg)
+    pure (runningClock, initialTime)
+
+data MqttClockConfig = MqttClockConfig
+  { host :: !String
   , port :: !Int
-  , username :: !(Maybe String)
-  , password :: !(Maybe String)
+  , user :: !(Maybe T.Text)
+  , password :: !(Maybe T.Text)
+  , clientId :: !T.Text
+  , subscriptions :: !(NonEmpty Subscription)
   }
-  deriving (Show, Eq, Ord, Generic)
-  deriving anyclass (FromJSON)
+  deriving (Show, Eq, Generic)
+
+type MqttClient = AutoClient
+
+type MqttSession = Session
+
+newtype MqttClockError = SubscriptionFailed (NonEmpty (Subscription, ReasonCode))
+  deriving (Show, Eq, Generic)
+  deriving anyclass (Exception)
+
+withMqttClient :: MqttClockConfig -> (MqttClient -> MqttSession -> IO a) -> IO a
+withMqttClient config k = do
+  let factory =
+        tcpConnection $
+          clientSettings config.host $
+            fromIntegral config.port
+  withClient
+    (defaultConnectOptions factory config.clientId)
+      { username = config.user
+      , password = TE.encodeUtf8 <$> config.password
+      }
+    defaultAutoReconnectConfig
+    \client session -> do
+      reasons <- subscribe client config.subscriptions []
+      let !failures =
+            NE.nonEmpty $
+              NE.filter (\(_, reason) -> not $ isSuccess reason) $
+                NE.zip config.subscriptions reasons
+      case failures of
+        Just errors -> throwIO $ SubscriptionFailed errors
+        Nothing -> k client session

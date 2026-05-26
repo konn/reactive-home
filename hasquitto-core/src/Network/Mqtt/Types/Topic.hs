@@ -3,6 +3,9 @@ module Network.Mqtt.Types.Topic (
   -- * Types
   Topic (..),
   TopicFilter (..),
+  wildMany,
+  wildOne,
+  fromTopic,
   TopicError (..),
 
   -- * Smart constructors
@@ -13,8 +16,10 @@ module Network.Mqtt.Types.Topic (
   topicLevels,
   filterLevels,
   matches,
+  stripPrefix,
 ) where
 
+import Data.String (IsString)
 import Data.Text (Text)
 import Data.Text qualified as T
 
@@ -24,6 +29,10 @@ most 65535 UTF-8 bytes. Construct with 'mkTopic'.
 -}
 newtype Topic = Topic {raw :: Text}
   deriving stock (Show, Eq, Ord)
+  deriving newtype (IsString)
+
+stripPrefix :: Text -> Topic -> Maybe Topic
+stripPrefix p (Topic t) = Topic <$> T.stripPrefix (p <> "/") t
 
 {- | A topic /filter/, used when subscribing. May contain the wildcards @+@
 (single level) and @#@ (multi level, final level only). Construct with
@@ -31,6 +40,24 @@ newtype Topic = Topic {raw :: Text}
 -}
 newtype TopicFilter = TopicFilter {raw :: Text}
   deriving stock (Show, Eq, Ord)
+  deriving newtype (IsString)
+
+-- | Concatenates two topic levels with a slash. For example, @"home" <> "kitchen" == "home/kitchen"@.
+instance Semigroup Topic where
+  (Topic a) <> (Topic b) = Topic (a <> "/" <> b)
+
+-- | Concatenates two topic levels with a slash. For example, @"home" <> wildMany == "home/#"@.
+instance Semigroup TopicFilter where
+  (TopicFilter a) <> (TopicFilter b) = TopicFilter (a <> "/" <> b)
+
+fromTopic :: Topic -> TopicFilter
+fromTopic (Topic t) = TopicFilter t
+
+wildMany :: TopicFilter
+wildMany = TopicFilter "#"
+
+wildOne :: TopicFilter
+wildOne = TopicFilter "+"
 
 -- | Why a 'Text' is not a valid topic name or filter.
 data TopicError

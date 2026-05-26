@@ -68,6 +68,7 @@ library
     effectful,
     generic-deriving,
     generic-lens,
+    hasquitto-auto-reconnect,
     hasquitto-core,
     lens,
     monad-schedule,
@@ -96,7 +97,21 @@ executable reactive-home
     -rtsopts
     -with-rtsopts=-N
 
-  build-depends: reactive-home
+  build-depends:
+    aeson,
+    bytestring,
+    containers,
+    effectful,
+    hashable,
+    hasquitto-auto-reconnect,
+    hasquitto-core,
+    optparse-applicative,
+    reactive-home,
+    rhine,
+    safe-exceptions,
+    text,
+    tomland,
+    unordered-containers,
 
 test-suite reactive-home-test
   import: defaults

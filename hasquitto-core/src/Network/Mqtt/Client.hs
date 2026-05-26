@@ -34,6 +34,7 @@ module Network.Mqtt.Client (
   subscribe,
   subscribe1,
   unsubscribe,
+  Message (..),
   recvMessage,
   tryRecvMessage,
   recvMessageSTM,
@@ -42,3 +43,4 @@ module Network.Mqtt.Client (
 ) where
 
 import Network.Mqtt.Client.Internal
+import Network.Mqtt.Message (Message (..))
