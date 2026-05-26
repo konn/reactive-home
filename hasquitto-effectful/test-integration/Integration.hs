@@ -1,11 +1,12 @@
 {- | Integration tests for the 'Mqtt' effect against a real MQTT broker.
 
-These mirror a representative subset of @hasquitto-auto-reconnect@'s integration suite, but
-drive the client-under-test entirely through the effect: the body runs in @'runEff' .
-'runMqtt'@ and calls 'connect' / 'withClient' / 'subscribe1' / 'publish' / 'waitClosed' /
-'status' as effect operations, using 'liftIO' for the non-MQTT orchestration (assertions,
-timeouts, STM counters, and forcing a takeover via a second /raw/ "Network.Mqtt.Client"
-connection). The timeout-bounded receive uses the re-exported pure 'recvMessageSTM'.
+These mirror a representative subset of @hasquitto-auto-reconnect@'s integration suite, driving
+the client-under-test through the effect: a client is acquired with 'withClient' \/ 'runMqtt'
+and the effect is scoped with 'runMqttWith', so MQTT calls read as @subscribe1 f q@ /
+@publish t b o@ with no explicit handle. 'liftIO' carries the non-MQTT orchestration
+(assertions, timeouts, STM counters, forcing a takeover via a second /raw/
+"Network.Mqtt.Client" connection). The timeout-bounded receive uses the re-exported pure
+'recvMessageSTM' applied to the client from 'getClient'.
 
 The broker endpoint is configurable via @--mqtt-host@ \/ @--mqtt-port@ (default
 @localhost:1883@), also via @TASTY_MQTT_HOST@ \/ @TASTY_MQTT_PORT@. A broker must be running
@@ -13,7 +14,6 @@ at that endpoint for these tests to pass.
 -}
 module Main (main) where
 
-import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM (atomically, modifyTVar', newTVarIO, readTVar, retry)
 import Control.Monad (when)
 import Data.ByteString (ByteString)
@@ -23,6 +23,7 @@ import Data.Time.Clock.POSIX (getPOSIXTime)
 import Effectful (liftIO, runEff)
 import Effectful.Network.Mqtt
 import Network.Mqtt.Client qualified as Core
+import Network.Mqtt.Client.AutoReconnect qualified as Auto
 import System.Timeout (timeout)
 import Test.Tasty
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -61,7 +62,7 @@ mkTests :: String -> Int -> TestTree
 mkTests host port =
   testGroup
     "hasquitto-effectful integration (mosquitto)"
-    [ testCase "auto-reconnects and resubscribes after a session takeover (via the effect)" do
+    [ testCase "withClient + runMqttWith: auto-reconnects and resubscribes after a session takeover" do
         cid <- uniqueClientId "eff-takeover"
         reconnected <- newTVarIO (0 :: Int)
         let cfg =
@@ -70,11 +71,11 @@ mkTests host port =
                 , backoff = BackoffConfig 50_000 500_000
                 }
         done <- timeout 30_000_000 $
-          runEff . runMqtt $
-            withClient (opts cid) cfg \a _ -> do
+          runEff $
+            withClient (opts cid) cfg \a session -> runMqttWith a session do
               t <- liftIO uniqueTopic
               tf <- liftIO (either (error . show) pure (mkTopicFilter t.raw))
-              rc <- subscribe1 a tf QoS1
+              rc <- subscribe1 tf QoS1
               liftIO (assertBool ("SUBACK reason " <> show rc) (isSuccess rc))
               -- Take over A's client id so the broker disconnects it.
               (b, _) <- liftIO (Core.connect (opts cid))
@@ -82,30 +83,32 @@ mkTests host port =
               liftIO (Core.disconnect b)
               liftIO (maybe (assertFailure "A did not auto-reconnect within 15s after takeover") pure waited)
               -- A is back and resubscribed (fresh session): round-trip a message to prove it.
-              _ <- publish a t payload (pubOpts QoS1)
-              received <- liftIO (timeout 5_000_000 (atomically (recvMessageSTM a)))
+              _ <- publish t payload (pubOpts QoS1)
+              a' <- getClient
+              received <- liftIO (timeout 5_000_000 (atomically (recvMessageSTM a')))
               liftIO case received of
                 Just msg -> msg.payload @?= payload
                 Nothing -> assertFailure "no message after reconnect (resubscribe failed?)"
         maybe (assertFailure "takeover test timed out after 30s") pure done
-    , testCase "intentional disconnect does not reconnect (via the effect)" do
-        cid <- uniqueClientId "eff-disconnect"
-        done <- timeout 15_000_000 $ runEff . runMqtt $ do
-          (a, _) <- connect (opts cid) defaultAutoReconnectConfig
-          t <- liftIO uniqueTopic
-          tf <- liftIO (either (error . show) pure (mkTopicFilter t.raw))
-          _ <- subscribe1 a tf QoS0
-          disconnect a
-          closed <- waitClosed a
-          liftIO (threadDelay 500_000) -- a (cancelled) supervisor would have tried to reconnect by now
-          st <- status a
-          pure (closed, st)
+    , testCase "runMqtt: subscribe -> publish -> receive round-trip" do
+        cid <- uniqueClientId "eff-roundtrip"
+        done <- timeout 20_000_000 $
+          runEff $
+            runMqtt (opts cid) defaultAutoReconnectConfig do
+              t <- liftIO uniqueTopic
+              tf <- liftIO (either (error . show) pure (mkTopicFilter t.raw))
+              rc <- subscribe1 tf QoS1
+              liftIO (assertBool ("SUBACK reason " <> show rc) (isSuccess rc))
+              _ <- publish t payload (pubOpts QoS1)
+              a <- getClient
+              received <- liftIO (timeout 5_000_000 (atomically (recvMessageSTM a)))
+              -- runMqtt does not disconnect; clean up the supervisor ourselves via the held client.
+              liftIO (Auto.disconnect a)
+              pure received
         case done of
-          Just (Right rc, st) -> do
-            rc @?= NormalDisconnection
-            st @?= Closed
-          Just (other, _) -> assertFailure ("expected Right NormalDisconnection, got " <> show other)
-          Nothing -> assertFailure "disconnect test timed out after 15s"
+          Just (Just msg) -> msg.payload @?= payload
+          Just Nothing -> assertFailure "no message received on the round-trip"
+          Nothing -> assertFailure "round-trip test timed out after 20s"
     ]
   where
     factory :: IO Conn

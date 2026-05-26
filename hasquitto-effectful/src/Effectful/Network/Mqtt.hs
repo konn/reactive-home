@@ -1,33 +1,55 @@
 {- | A thin [@effectful@](https://hackage.haskell.org/package/effectful) wrapper over
-"Network.Mqtt.Client.AutoReconnect": a dynamic, IO-backed 'Mqtt' effect whose operations
-mirror the auto-reconnecting MQTT v5 client one-for-one. Every @… -> IO x@ in that module
-becomes @('Mqtt' ':>' es) => … -> 'Eff' es x@; run the effect with 'runMqtt' (which needs
-'IOE'). Intended for qualified import:
+"Network.Mqtt.Client.AutoReconnect": a dynamic, IO-backed 'Mqtt' effect for talking to /the/
+auto-reconnecting MQTT v5 client that the interpreter holds. Unlike the underlying module, the
+'AutoClient' is supplied once — to 'runMqtt' \/ 'runMqttWith' — instead of threaded through
+every call, so effect code reads as plain @publish t b o@, @subscribe1 f q@, @recvMessage@, …
+Intended for qualified import:
 
 @
 import Effectful.Network.Mqtt qualified as Mqtt
 @
 
-The handle type ('AutoClient'), the configuration ('AutoReconnectConfig', 'BackoffConfig'),
-the protocol vocabulary ("Network.Mqtt.Types"), the received-message type
-("Network.Mqtt.Message"), and the exception hierarchy ("Network.Mqtt.Exception") are
-re-exported here, so a caller needs to import only this module. The blocking behaviour,
-delivery semantics, and reconnect caveats are exactly those of
+== Usage
+
+Acquire a client with 'connect' \/ 'withClient' (plain 'IOE' helpers), then scope the effect
+with 'runMqttWith'; or do both at once with 'runMqtt':
+
+@
+runEff '$' 'runMqtt' opts cfg '$' do
+  _ <- 'subscribe1' myFilter QoS1
+  'publish_' myTopic \"hello\"
+  forever ('recvMessage' >>= handle)
+@
+
+'runMqtt' connects and runs but does __not__ disconnect; for bracketed teardown use
+@'withClient' opts cfg \\ac s -> 'runMqttWith' ac s …@. The held handle and the initial
+handshake 'Session' are available inside the effect via 'getClient' and 'getSession' (e.g. to
+use the pure 'recvMessageSTM' or 'underlying').
+
+The configuration ('AutoReconnectConfig', 'BackoffConfig'), the protocol vocabulary, the
+received-message type ("Network.Mqtt.Message"), and the exception hierarchy
+("Network.Mqtt.Exception") are re-exported here, so a caller imports only this module. The
+blocking behaviour, delivery semantics, and reconnect caveats are exactly those of
 "Network.Mqtt.Client.AutoReconnect" — read its Haddock.
 
-The 'Mqtt' constructors are exported so you can write your own interpreter (for example a
-mock for tests); ordinary code only needs the smart constructors and 'runMqtt'.
+The 'Mqtt' constructors are exported so you can write your own interpreter (for example a mock
+for tests); ordinary code only needs the smart constructors and 'runMqtt' \/ 'runMqttWith'.
 -}
 module Effectful.Network.Mqtt (
   -- * The effect
   Mqtt (..),
   runMqtt,
+  runMqttWith,
 
-  -- * Lifecycle
+  -- * Acquiring a client (plain 'IOE' helpers)
   connect,
   withClient,
-  disconnect,
-  waitClosed,
+
+  -- * The held client & session
+  getClient,
+  getSession,
+
+  -- * Status
   status,
   isConnected,
 
@@ -84,8 +106,8 @@ module Effectful.Network.Mqtt (
 
 import Data.ByteString (ByteString)
 import Data.List.NonEmpty (NonEmpty)
-import Effectful (Dispatch (Dynamic), DispatchOf, Eff, Effect, IOE, liftIO, type (:>))
-import Effectful.Dispatch.Dynamic (interpret, localSeqUnliftIO, send)
+import Effectful (Dispatch (Dynamic), DispatchOf, Eff, Effect, IOE, liftIO, withSeqEffToIO, type (:>))
+import Effectful.Dispatch.Dynamic (interpret_, send)
 import Network.Mqtt.Client (
   AuthChallenge (..),
   AuthResponse (..),
@@ -124,127 +146,138 @@ import Network.Mqtt.Types.Will
 
 -- The effect ----------------------------------------------------------------
 
-{- | The MQTT capability: an auto-reconnecting MQTT v5 client expressed as operations in
-the 'Eff' monad. Each constructor corresponds 1:1 to an operation of
-"Network.Mqtt.Client.AutoReconnect" and carries its explicit 'AutoClient'. Interpret with
-'runMqtt'.
+{- | The MQTT capability: operations on /the/ auto-reconnecting MQTT v5 client that the
+interpreter ('runMqtt' \/ 'runMqttWith') holds. Each operation corresponds to one of
+"Network.Mqtt.Client.AutoReconnect" — but without the explicit 'AutoClient' argument — plus
+'GetClient' \/ 'GetSession' to recover the held handle and initial 'Session'.
 -}
 data Mqtt :: Effect where
-  Connect :: ConnectOptions -> AutoReconnectConfig -> Mqtt m (AutoClient, Session)
-  WithClient :: ConnectOptions -> AutoReconnectConfig -> (AutoClient -> Session -> m a) -> Mqtt m a
-  Disconnect :: AutoClient -> Mqtt m ()
-  WaitClosed :: AutoClient -> Mqtt m (Either MqttException ReasonCode)
-  Status :: AutoClient -> Mqtt m Status
-  IsConnected :: AutoClient -> Mqtt m Bool
-  Publish :: AutoClient -> Topic -> ByteString -> PublishOptions -> Mqtt m PublishResult
-  Publish_ :: AutoClient -> Topic -> ByteString -> Mqtt m ()
-  Subscribe :: AutoClient -> NonEmpty Subscription -> Properties -> Mqtt m (NonEmpty ReasonCode)
-  Subscribe1 :: AutoClient -> TopicFilter -> QoS -> Mqtt m ReasonCode
-  Unsubscribe :: AutoClient -> NonEmpty TopicFilter -> Properties -> Mqtt m (NonEmpty ReasonCode)
-  Ping :: AutoClient -> Mqtt m ()
-  Subscriptions :: AutoClient -> Mqtt m [Subscription]
-  RecvMessage :: AutoClient -> Mqtt m Message
-  TryRecvMessage :: AutoClient -> Mqtt m (Maybe Message)
+  GetClient :: Mqtt m AutoClient
+  GetSession :: Mqtt m Session
+  Status :: Mqtt m Status
+  IsConnected :: Mqtt m Bool
+  Publish :: Topic -> ByteString -> PublishOptions -> Mqtt m PublishResult
+  Publish_ :: Topic -> ByteString -> Mqtt m ()
+  Subscribe :: NonEmpty Subscription -> Properties -> Mqtt m (NonEmpty ReasonCode)
+  Subscribe1 :: TopicFilter -> QoS -> Mqtt m ReasonCode
+  Unsubscribe :: NonEmpty TopicFilter -> Properties -> Mqtt m (NonEmpty ReasonCode)
+  Ping :: Mqtt m ()
+  Subscriptions :: Mqtt m [Subscription]
+  RecvMessage :: Mqtt m Message
+  TryRecvMessage :: Mqtt m (Maybe Message)
 
 type instance DispatchOf Mqtt = Dynamic
 
--- Interpreter ---------------------------------------------------------------
+-- Interpreters --------------------------------------------------------------
 
-{- | Interpret 'Mqtt' by delegating every operation to "Network.Mqtt.Client.AutoReconnect"
-in 'IO'. The single higher-order operation ('withClient') runs its continuation back in
-'Eff' via 'localSeqUnliftIO', so the underlying bracket still owns the connection lifetime.
+{- | Run a 'Mqtt' computation against an already-connected 'AutoClient' and its initial
+'Session', delegating every operation to "Network.Mqtt.Client.AutoReconnect" in 'IO'.
 -}
-runMqtt :: (IOE :> es) => Eff (Mqtt : es) a -> Eff es a
-runMqtt = interpret \env -> \case
-  Connect opts cfg -> liftIO (Auto.connect opts cfg)
-  WithClient opts cfg act ->
-    localSeqUnliftIO env \unlift ->
-      Auto.withClient opts cfg \ac session -> unlift (act ac session)
-  Disconnect ac -> liftIO (Auto.disconnect ac)
-  WaitClosed ac -> liftIO (Auto.waitClosed ac)
-  Status ac -> liftIO (Auto.status ac)
-  IsConnected ac -> liftIO (Auto.isConnected ac)
-  Publish ac top body opts -> liftIO (Auto.publish ac top body opts)
-  Publish_ ac top body -> liftIO (Auto.publish_ ac top body)
-  Subscribe ac subs props -> liftIO (Auto.subscribe ac subs props)
-  Subscribe1 ac tf q -> liftIO (Auto.subscribe1 ac tf q)
-  Unsubscribe ac fs props -> liftIO (Auto.unsubscribe ac fs props)
-  Ping ac -> liftIO (Auto.ping ac)
-  Subscriptions ac -> liftIO (Auto.subscriptions ac)
-  RecvMessage ac -> liftIO (Auto.recvMessage ac)
-  TryRecvMessage ac -> liftIO (Auto.tryRecvMessage ac)
+runMqttWith :: (IOE :> es) => AutoClient -> Session -> Eff (Mqtt : es) a -> Eff es a
+runMqttWith ac session = interpret_ \case
+  GetClient -> pure ac
+  GetSession -> pure session
+  Status -> liftIO (Auto.status ac)
+  IsConnected -> liftIO (Auto.isConnected ac)
+  Publish top body opts -> liftIO (Auto.publish ac top body opts)
+  Publish_ top body -> liftIO (Auto.publish_ ac top body)
+  Subscribe subs props -> liftIO (Auto.subscribe ac subs props)
+  Subscribe1 tf q -> liftIO (Auto.subscribe1 ac tf q)
+  Unsubscribe fs props -> liftIO (Auto.unsubscribe ac fs props)
+  Ping -> liftIO (Auto.ping ac)
+  Subscriptions -> liftIO (Auto.subscriptions ac)
+  RecvMessage -> liftIO (Auto.recvMessage ac)
+  TryRecvMessage -> liftIO (Auto.tryRecvMessage ac)
 
--- Lifecycle -----------------------------------------------------------------
+{- | 'connect' and then 'runMqttWith'. Connects and runs the computation, but does __not__
+disconnect afterwards (the supervisor keeps the link alive) — suitable for a long-running
+process. For bracketed teardown use @'withClient' opts cfg \\ac s -> 'runMqttWith' ac s …@.
+-}
+runMqtt :: (IOE :> es) => ConnectOptions -> AutoReconnectConfig -> Eff (Mqtt : es) a -> Eff es a
+runMqtt opts cfg act = do
+  (ac, session) <- connect opts cfg
+  runMqttWith ac session act
+
+-- Acquiring a client --------------------------------------------------------
 
 -- | Connect and start the reconnect supervisor (wraps @connect@ of "Network.Mqtt.Client.AutoReconnect").
-connect :: (Mqtt :> es) => ConnectOptions -> AutoReconnectConfig -> Eff es (AutoClient, Session)
-connect opts cfg = send (Connect opts cfg)
+connect :: (IOE :> es) => ConnectOptions -> AutoReconnectConfig -> Eff es (AutoClient, Session)
+connect opts cfg = liftIO (Auto.connect opts cfg)
 
--- | 'connect' \/ 'disconnect' bracketed around an action (wraps @withClient@).
+{- | 'connect' \/ disconnect bracketed around an action (wraps @withClient@). This is the only
+teardown path this module exposes.
+-}
 withClient ::
-  (Mqtt :> es) =>
+  (IOE :> es) =>
   ConnectOptions ->
   AutoReconnectConfig ->
   (AutoClient -> Session -> Eff es a) ->
   Eff es a
-withClient opts cfg act = send (WithClient opts cfg act)
+withClient opts cfg act =
+  withSeqEffToIO \unlift ->
+    Auto.withClient opts cfg \ac session -> unlift (act ac session)
 
--- | Disconnect intentionally; the wrapper becomes permanently closed (wraps @disconnect@).
-disconnect :: (Mqtt :> es) => AutoClient -> Eff es ()
-disconnect ac = send (Disconnect ac)
+-- The held client & session -------------------------------------------------
 
--- | Block until the client is permanently closed, reporting why (wraps @waitClosed@).
-waitClosed :: (Mqtt :> es) => AutoClient -> Eff es (Either MqttException ReasonCode)
-waitClosed ac = send (WaitClosed ac)
+-- | The 'AutoClient' the interpreter is operating on (e.g. for 'recvMessageSTM' or 'underlying').
+getClient :: (Mqtt :> es) => Eff es AutoClient
+getClient = send GetClient
+
+-- | The initial handshake 'Session' supplied to 'runMqttWith'.
+getSession :: (Mqtt :> es) => Eff es Session
+getSession = send GetSession
+
+-- Status --------------------------------------------------------------------
 
 -- | The current connection 'Status' (wraps @status@).
-status :: (Mqtt :> es) => AutoClient -> Eff es Status
-status ac = send (Status ac)
+status :: (Mqtt :> es) => Eff es Status
+status = send Status
 
 -- | Is the link currently up? (wraps @isConnected@).
-isConnected :: (Mqtt :> es) => AutoClient -> Eff es Bool
-isConnected ac = send (IsConnected ac)
+isConnected :: (Mqtt :> es) => Eff es Bool
+isConnected = send IsConnected
 
 -- Messaging -----------------------------------------------------------------
 
 -- | Publish, blocking until connected (wraps @publish@).
-publish :: (Mqtt :> es) => AutoClient -> Topic -> ByteString -> PublishOptions -> Eff es PublishResult
-publish ac top body opts = send (Publish ac top body opts)
+publish :: (Mqtt :> es) => Topic -> ByteString -> PublishOptions -> Eff es PublishResult
+publish top body opts = send (Publish top body opts)
 
 -- | Fire-and-forget QoS-0 publish, blocking until connected (wraps @publish_@).
-publish_ :: (Mqtt :> es) => AutoClient -> Topic -> ByteString -> Eff es ()
-publish_ ac top body = send (Publish_ ac top body)
+publish_ :: (Mqtt :> es) => Topic -> ByteString -> Eff es ()
+publish_ top body = send (Publish_ top body)
 
 -- | Subscribe, blocking until connected; successful filters are tracked for replay (wraps @subscribe@).
-subscribe :: (Mqtt :> es) => AutoClient -> NonEmpty Subscription -> Properties -> Eff es (NonEmpty ReasonCode)
-subscribe ac subs props = send (Subscribe ac subs props)
+subscribe :: (Mqtt :> es) => NonEmpty Subscription -> Properties -> Eff es (NonEmpty ReasonCode)
+subscribe subs props = send (Subscribe subs props)
 
 -- | Subscribe to a single filter at the given QoS (wraps @subscribe1@).
-subscribe1 :: (Mqtt :> es) => AutoClient -> TopicFilter -> QoS -> Eff es ReasonCode
-subscribe1 ac tf q = send (Subscribe1 ac tf q)
+subscribe1 :: (Mqtt :> es) => TopicFilter -> QoS -> Eff es ReasonCode
+subscribe1 tf q = send (Subscribe1 tf q)
 
 -- | Unsubscribe, blocking until connected; successful filters are dropped from the tracked set (wraps @unsubscribe@).
-unsubscribe :: (Mqtt :> es) => AutoClient -> NonEmpty TopicFilter -> Properties -> Eff es (NonEmpty ReasonCode)
-unsubscribe ac fs props = send (Unsubscribe ac fs props)
+unsubscribe :: (Mqtt :> es) => NonEmpty TopicFilter -> Properties -> Eff es (NonEmpty ReasonCode)
+unsubscribe fs props = send (Unsubscribe fs props)
 
 -- | Send a PINGREQ and wait for the PINGRESP, blocking until connected (wraps @ping@).
-ping :: (Mqtt :> es) => AutoClient -> Eff es ()
-ping ac = send (Ping ac)
+ping :: (Mqtt :> es) => Eff es ()
+ping = send Ping
 
 -- | A snapshot of the currently-tracked subscriptions (wraps @subscriptions@).
-subscriptions :: (Mqtt :> es) => AutoClient -> Eff es [Subscription]
-subscriptions ac = send (Subscriptions ac)
+subscriptions :: (Mqtt :> es) => Eff es [Subscription]
+subscriptions = send Subscriptions
 
 -- Receiving -----------------------------------------------------------------
 
 -- | Block for the next message; the queue is reused across reconnects (wraps @recvMessage@).
-recvMessage :: (Mqtt :> es) => AutoClient -> Eff es Message
-recvMessage ac = send (RecvMessage ac)
+recvMessage :: (Mqtt :> es) => Eff es Message
+recvMessage = send RecvMessage
 
 -- | Non-blocking variant of 'recvMessage' (wraps @tryRecvMessage@).
-tryRecvMessage :: (Mqtt :> es) => AutoClient -> Eff es (Maybe Message)
-tryRecvMessage ac = send (TryRecvMessage ac)
+tryRecvMessage :: (Mqtt :> es) => Eff es (Maybe Message)
+tryRecvMessage = send TryRecvMessage
 
 -- Note: 'recvMessageSTM' is re-exported unchanged from "Network.Mqtt.Client.AutoReconnect".
--- It is pure (it only /constructs/ an @STM Message@), so it needs no lifting; run the action
--- with an STM-capable effect, e.g. @Effectful.Concurrent.STM.atomically@.
+-- It is pure (it only /constructs/ an @STM Message@), so it needs no lifting; obtain the
+-- client with 'getClient' and run the action with an STM-capable effect, e.g.
+-- @Effectful.Concurrent.STM.atomically@.

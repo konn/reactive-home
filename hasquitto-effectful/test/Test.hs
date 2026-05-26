@@ -1,17 +1,17 @@
 {- | Unit tests for the 'Mqtt' effect plumbing, with no broker.
 
 A stub interpreter records the name of every operation it dispatches (and returns canned
-values), so we can assert that each smart constructor sends the matching 'Mqtt' constructor
-and that the higher-order 'withClient' runs its continuation in order. The whole suite is
-pure 'Eff' (no 'IOE'): the opaque 'AutoClient' is passed as a never-forced thunk that the
-stub ignores.
+values), so we can assert that each smart constructor sends the matching 'Mqtt' constructor.
+The whole suite is pure 'Eff' (no 'IOE'): 'getClient' returns a never-forced thunk, and the
+acquisition helpers ('connect' \/ 'withClient' \/ 'runMqtt' \/ 'runMqttWith') are 'IOE'-bound
+and exercised by the integration suite instead.
 -}
 module Main (main) where
 
 import Data.Functor (($>))
 import Data.List.NonEmpty (NonEmpty (..))
 import Effectful (Eff, runPureEff, type (:>))
-import Effectful.Dispatch.Dynamic (interpret, localSeqUnlift)
+import Effectful.Dispatch.Dynamic (interpret_)
 import Effectful.Network.Mqtt
 import Effectful.State.Static.Local (State, execState, modify)
 import Test.Tasty (TestTree, defaultMain, testGroup)
@@ -30,7 +30,8 @@ dispatchTests =
   where
     expected :: [String]
     expected =
-      [ "connect"
+      [ "getClient"
+      , "getSession"
       , "isConnected"
       , "status"
       , "subscribe"
@@ -42,33 +43,25 @@ dispatchTests =
       , "tryRecvMessage"
       , "unsubscribe"
       , "ping"
-      , "withClient"
-      , "waitClosed"
-      , "disconnect"
       ]
 
 -- | A small program that exercises each operation exactly once, in a known order.
 program :: (Mqtt :> es) => Eff es ()
 program = do
-  (c, _) <- connect opts cfg
-  _ <- isConnected c
-  _ <- status c
-  _ <- subscribe c (sub :| []) []
-  _ <- subscribe1 c filt QoS1
-  publish_ c top "x"
-  _ <- publish c top "y" defaultPublishOptions
-  _ <- subscriptions c
-  _ <- recvMessage c
-  _ <- tryRecvMessage c
-  _ <- unsubscribe c (filt :| []) []
-  ping c
-  withClient opts cfg \c' _ -> do
-    _ <- waitClosed c'
-    disconnect c'
+  _ <- getClient
+  _ <- getSession
+  _ <- isConnected
+  _ <- status
+  _ <- subscribe (sub :| []) []
+  _ <- subscribe1 filt QoS1
+  publish_ top "x"
+  _ <- publish top "y" defaultPublishOptions
+  _ <- subscriptions
+  _ <- recvMessage
+  _ <- tryRecvMessage
+  _ <- unsubscribe (filt :| []) []
+  ping
   where
-    -- None of these are forced by the stub; the factory is never run either.
-    opts = defaultConnectOptions (error "connection factory must not be forced") "test-client"
-    cfg = defaultAutoReconnectConfig
     top = either (error . show) id (mkTopic "test/topic")
     filt = either (error . show) id (mkTopicFilter "test/#")
     sub =
@@ -81,27 +74,23 @@ program = do
         }
 
 {- | Interpret 'Mqtt' purely: append each operation's name to the 'State' log and return a
-canned value. The 'AutoClient' argument is ignored (never forced).
+canned value. 'GetClient' returns a never-forced thunk (the stub holds no real client).
 -}
 runStub :: (State [String] :> es) => Eff (Mqtt : es) a -> Eff es a
-runStub = interpret \env -> \case
-  Connect _ _ -> record "connect" $> (noClient, dummySession)
-  WithClient _ _ k -> do
-    record "withClient"
-    localSeqUnlift env \unlift -> unlift (k noClient dummySession)
-  Disconnect _ -> record "disconnect"
-  WaitClosed _ -> record "waitClosed" $> Right Success
-  Status _ -> record "status" $> Connected
-  IsConnected _ -> record "isConnected" $> True
+runStub = interpret_ \case
+  GetClient -> record "getClient" $> noClient
+  GetSession -> record "getSession" $> dummySession
+  Status -> record "status" $> Connected
+  IsConnected -> record "isConnected" $> True
   Publish {} -> record "publish" $> PublishedQoS0
   Publish_ {} -> record "publish_"
-  Subscribe _ subs _ -> record "subscribe" $> fmap (const Success) subs
+  Subscribe subs _ -> record "subscribe" $> fmap (const Success) subs
   Subscribe1 {} -> record "subscribe1" $> Success
-  Unsubscribe _ fs _ -> record "unsubscribe" $> fmap (const Success) fs
-  Ping _ -> record "ping"
-  Subscriptions _ -> record "subscriptions" $> []
-  RecvMessage _ -> record "recvMessage" $> dummyMessage
-  TryRecvMessage _ -> record "tryRecvMessage" $> Just dummyMessage
+  Unsubscribe fs _ -> record "unsubscribe" $> fmap (const Success) fs
+  Ping -> record "ping"
+  Subscriptions -> record "subscriptions" $> []
+  RecvMessage -> record "recvMessage" $> dummyMessage
+  TryRecvMessage -> record "tryRecvMessage" $> Just dummyMessage
   where
     noClient = error "AutoClient must not be forced by the stub interpreter" :: AutoClient
     dummySession =

@@ -101,6 +101,7 @@ test-suite hasquitto-effectful-integration
   build-depends:
     bytestring,
     effectful,
+    hasquitto-auto-reconnect,
     hasquitto-core,
     hasquitto-effectful,
     stm,
