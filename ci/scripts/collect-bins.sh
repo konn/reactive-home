@@ -20,10 +20,10 @@ set +x
 
 echo "[*] Places artifacts into the correct place"
 
-jq -rMCc '."install-plan"[] | select(.style == "local") | select(."bin-file" != null) | {path: ".bin-file", component: ."component-name"}' dist-newstyle/cache/plan.json | while read -r TARG; do
-    COMPONENT=$(echo "${TARG}" | awk '{ print $1 }')
-    BIN=$(echo "${TARG}" | awk '{ print $2 }')
-    TYPE=$(echo "${COMPONENT}" | cut -d':' -f2)
+jq -rMCc '."install-plan"[] | select(.style == "local") | select(."bin-file" != null) | {path: ."bin-file", component: ."component-name"}' dist-newstyle/cache/plan.json | while read -r OBJ; do
+    COMPONENT=$(jq -rMCc '.component' <<< "${OBJ}")
+    BIN=$(jq -rMCc '.path' <<< "${OBJ}")
+    TYPE=$(echo "${COMPONENT}" | cut -d':' -f1)
     echo "---"
     echo "- Comp: ${COMPONENT}"
     echo "- Path: ${BIN}"
