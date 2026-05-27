@@ -113,6 +113,7 @@ executable reactive-home
     safe-exceptions,
     text,
     tomland,
+    transformers,
     unordered-containers,
 
 test-suite reactive-home-test

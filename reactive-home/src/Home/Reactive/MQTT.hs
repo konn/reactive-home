@@ -13,6 +13,7 @@ module Home.Reactive.MQTT (
   MqttClockConfig (..),
   newMqttClock,
   MqttClock (..),
+  EffMqttClock (..),
   MqttClockError (..),
 
   -- * Re-exports

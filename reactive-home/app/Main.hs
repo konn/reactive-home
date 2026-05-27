@@ -15,6 +15,8 @@ module Main (main) where
 
 import Control.Applicative ((<**>))
 import Control.Exception (Exception, throwIO)
+import Control.Lens (view)
+import Control.Monad.Trans.Class (lift)
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Aeson qualified as A
 import Data.ByteString.Lazy qualified as LBS
@@ -27,10 +29,13 @@ import Data.Hashable (Hashable)
 import Data.List.NonEmpty qualified as NE
 import Data.String (IsString)
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Effectful
 import Effectful.Concurrent (runConcurrent)
+import Effectful.Console.ByteString (Console, runConsole)
+import Effectful.Console.ByteString qualified as Eff
 import Effectful.Network.Mqtt
-import Effectful.Reader.Static (runReader)
+import Effectful.Reader.Static (Reader, asks, runReader)
 import FRP.Rhine
 import GHC.Generics (Generic)
 import Home.Reactive.MQTT
@@ -139,16 +144,28 @@ data LockStatus = LOCKED | UNLOCKED
   deriving (Show, Eq, Ord, Generic)
   deriving anyclass (FromJSON, ToJSON)
 
-data SesameStatus = SesamePayload
-  { position :: !Int
-  , lockCurrentState :: !LockStatus
-  , batteryVoltage :: !Double
-  , batteryLevel :: !Int
-  , chargingState :: !T.Text
-  , statusLowBattery :: !Bool
+data RawSesameStatus = SesamePayload
+  { position :: {-# UNPACK #-} !Int
+  , lockCurrentState :: {-# UNPACK #-} !LockStatus
+  , batteryVoltage :: {-# UNPACK #-} !Double
+  , batteryLevel :: {-# UNPACK #-} !Int
+  , chargingState :: {-# UNPACK #-} !T.Text
+  , statusLowBattery :: {-# UNPACK #-} !Bool
   }
   deriving (Show, Eq, Ord, Generic)
   deriving anyclass (FromJSON, ToJSON)
+
+data SesameStatus = SesameStatus
+  { name :: {-# UNPACK #-} !T.Text
+  , uuid :: {-# UNPACK #-} !SesameUUID
+  , lastUpdated :: {-# UNPACK #-} !UTCTime
+  , position :: {-# UNPACK #-} !Int
+  , lockCurrentState :: {-# UNPACK #-} !LockStatus
+  , batteryVoltage :: {-# UNPACK #-} !Double
+  , batteryLevel :: {-# UNPACK #-} !Int
+  , statusLowBattery :: {-# UNPACK #-} !Bool
+  }
+  deriving (Show, Eq, Ord, Generic)
 
 data ParseResult e a
   = ParseSuccess a
@@ -164,14 +181,9 @@ data Action
 data HomeEnv = HomeEnv
   { mqtt :: {-# UNPACK #-} !MqttClient
   , sesame :: {-# UNPACK #-} !(Maybe SesameEnv)
+  , espresense :: !(Maybe ESPresenseConfig)
   }
   deriving (Generic)
-
-resultToEither :: ParseResult e a -> Either e (Maybe a)
-resultToEither = \case
-  ParseSuccess a -> Right (Just a)
-  ParseFailure e -> Left e
-  Skipped -> Right Nothing
 
 data SesameError
   = InvalidMessage !MqttMessage
@@ -183,7 +195,7 @@ data SesameError
 parseSesameStatus ::
   SesameEnv ->
   MqttMessage ->
-  ParseResult SesameError (T.Text, SesameDevice, SesameStatus)
+  ParseResult SesameError (T.Text, SesameDevice, RawSesameStatus)
 parseSesameStatus env msg =
   case stripPrefix env.prefix msg.topic of
     Nothing -> Skipped
@@ -202,39 +214,175 @@ parseSesameStatus env msg =
       | otherwise -> Skipped
 
 sesameStatuses ::
-  (Monad m) =>
-  SesameEnv ->
-  BehaviourF m t MqttMessage (ParseResult SesameError (t, T.Text, SesameDevice, SesameStatus))
-sesameStatuses env = proc msg -> do
+  (Reader HomeEnv :> es) =>
+  BehaviourF
+    (Eff es)
+    UTCTime
+    MqttMessage
+    (ParseResult SesameError SesameStatus)
+sesameStatuses = proc msg -> do
+  msess <- constMCl (asks @HomeEnv $ view #sesame) -< ()
   TimeInfo {..} <- timeInfo -< ()
   returnA
-    -<
-      parseSesameStatus env msg
-        <&> \(name, device, stat) -> (absolute, name, device, stat)
+    -< case msess of
+      Nothing -> Skipped
+      Just sess ->
+        parseSesameStatus sess msg
+          <&> \(name, device, stat) ->
+            buildSesameStatus absolute name device stat
+
+buildSesameStatus ::
+  UTCTime ->
+  T.Text ->
+  SesameDevice ->
+  RawSesameStatus ->
+  SesameStatus
+buildSesameStatus absolute name device stat =
+  SesameStatus
+    { name
+    , uuid = device.uuid
+    , lastUpdated = absolute
+    , position = stat.position
+    , lockCurrentState = stat.lockCurrentState
+    , batteryVoltage = stat.batteryVoltage
+    , batteryLevel = stat.batteryLevel
+    , statusLowBattery = stat.statusLowBattery
+    }
 
 reportErrors ::
-  (Exception e, MonadIO m) =>
-  ClSF m cl (ParseResult e a) (Maybe a)
-reportErrors = arrM $ \case
+  (Show e, Console :> es) =>
+  ClSF (Eff es) cl (ParseResult e a) (Maybe a)
+reportErrors = arrM \case
   ParseFailure err -> do
-    liftIO $ putStrLn $ "Error: " <> show err
+    lift $ Eff.putStrLn $ TE.encodeUtf8 $ T.pack $ "Error: " <> show err
     pure Nothing
   ParseSuccess a -> pure (Just a)
   Skipped -> pure Nothing
 
-currentSesameStatus ::
-  (MonadIO m) =>
-  SesameEnv ->
-  BehaviourF m t Message (HashMap T.Text (t, SesameStatus))
-currentSesameStatus env =
-  feedback HM.empty $
-    first
-      (sesameStatuses env >-> reportErrors)
-      >-> arr \(mmsg, prev) ->
-        let new = case mmsg of
-              Nothing -> prev
-              Just (time, name, _, s) -> HM.insert name (time, s) prev
-         in (new, new)
+aggregateSesameStatus ::
+  BehaviourF (Eff es) UTCTime (Maybe SesameStatus) (HashMap T.Text SesameStatus)
+aggregateSesameStatus =
+  feedback HM.empty $ arr \(mmsg, prev) ->
+    let new = case mmsg of
+          Nothing -> prev
+          Just stt -> HM.insert stt.name stt prev
+     in (new, new)
+
+processSesame ::
+  ( IOE :> es
+  , Reader HomeEnv :> es
+  , Console :> es
+  ) =>
+  ClSF (Eff es) EffMqttClock Message ()
+processSesame =
+  sesameStatuses
+    >-> reportErrors
+    >-> aggregateSesameStatus
+    >-> arrMCl (liftIO . print)
+
+type ESPSensorName = T.Text
+
+type ESPDeviceId = T.Text
+
+data RawESPStatus = RawESPStatus
+  { mac :: {-# UNPACK #-} !T.Text
+  , id :: {-# UNPACK #-} !T.Text
+  , name :: {-# UNPACK #-} !T.Text
+  , rssi :: {-# UNPACK #-} !Float
+  , rssiVar :: {-# UNPACK #-} !Float
+  , distance :: {-# UNPACK #-} !Float
+  , var :: {-# UNPACK #-} !Float
+  , int :: {-# UNPACK #-} !Int
+  }
+  deriving (Show, Eq, Ord, Generic)
+  deriving anyclass (FromJSON, ToJSON)
+
+data ESPStatus = ESPStatus
+  { timestamp :: {-# UNPACK #-} !UTCTime
+  , sensor :: {-# UNPACK #-} !T.Text
+  , mac :: {-# UNPACK #-} !T.Text
+  , id :: {-# UNPACK #-} !T.Text
+  , name :: {-# UNPACK #-} !T.Text
+  , rssi :: {-# UNPACK #-} !Float
+  , rssiVar :: {-# UNPACK #-} !Float
+  , distance :: {-# UNPACK #-} !Float
+  , var :: {-# UNPACK #-} !Float
+  , int :: {-# UNPACK #-} !Int
+  }
+  deriving (Show, Eq, Ord, Generic)
+  deriving anyclass (FromJSON, ToJSON)
+
+data ESPSensorState = ESPSensorState
+  { timestamp :: {-# UNPACK #-} !UTCTime
+  , distance :: {-# UNPACK #-} !Float
+  , variance :: {-# UNPACK #-} !Float
+  , interval :: {-# UNPACK #-} !Int
+  }
+  deriving (Show, Eq, Ord, Generic)
+
+parseRawESPStatus ::
+  MqttMessage ->
+  ParseResult String (T.Text, RawESPStatus)
+parseRawESPStatus msg =
+  case stripPrefix "espresense/devices" msg.topic of
+    Nothing -> Skipped
+    Just (Topic rest) ->
+      case T.splitOn "/" rest of
+        [_, sensor] ->
+          case A.eitherDecode' $ LBS.fromStrict msg.payload of
+            Left err -> ParseFailure err
+            Right stt -> ParseSuccess (sensor, stt)
+        _ -> Skipped
+
+buildESPStatus :: UTCTime -> T.Text -> RawESPStatus -> ESPStatus
+buildESPStatus timestamp sensor stt =
+  ESPStatus
+    { timestamp
+    , sensor
+    , mac = stt.mac
+    , id = stt.id
+    , name = stt.name
+    , rssi = stt.rssi
+    , rssiVar = stt.rssiVar
+    , distance = stt.distance
+    , var = stt.var
+    , int = stt.int
+    }
+
+parseESPStatusS ::
+  (Time cl ~ UTCTime) =>
+  ClSF (Eff es) cl MqttMessage (ParseResult String ESPStatus)
+parseESPStatusS = proc msg -> do
+  TimeInfo {..} <- timeInfo -< ()
+  returnA -< uncurry (buildESPStatus absolute) <$> parseRawESPStatus msg
+
+aggregateESPStatus ::
+  BehaviourF (Eff es) UTCTime (Maybe ESPStatus) (HashMap (ESPSensorName, ESPDeviceId) ESPSensorState)
+aggregateESPStatus = feedback HM.empty $ arr \(!mest, !prev) ->
+  case mest of
+    Nothing -> (prev, prev)
+    Just stt ->
+      let ssst =
+            ESPSensorState
+              { timestamp = stt.timestamp
+              , distance = stt.distance
+              , variance = stt.var
+              , interval = stt.int
+              }
+          !new = HM.insert (stt.sensor, stt.id) ssst prev
+       in (new, new)
+
+processESP :: (IOE :> es, Console :> es) => ClSF (Eff es) EffMqttClock Message ()
+processESP =
+  parseESPStatusS
+    >-> reportErrors
+    >-> aggregateESPStatus
+    >-> arrMCl (liftIO . print)
+
+mainLogic ::
+  (IOE :> es, Reader HomeEnv :> es, Console :> es) =>
+  ClSF (Eff es) EffMqttClock () ()
+mainLogic = void (processSesame &&& processESP) <-< tagS
 
 main :: IO ()
 main = do
@@ -265,19 +413,11 @@ main = do
                       }
               }
       let sesame = fromSesameConfig <$> config.sesame
-      let procesSesame = case sesame of
-            Nothing -> pure ()
-            Just sess ->
-              (currentSesameStatus sess >-> arrMCl (liftIO . print))
+          espresense = config.espresense
       withMqttClient mqttCfg \mqtt sess ->
         runEff $
-          runReader HomeEnv {..} $
-            runMqttWith mqtt sess $
-              runConcurrent do
-                flow $
-                  tagS
-                    >-> void
-                      ( arrMCl (liftIO . print @MqttMessage)
-                          &&& procesSesame
-                      )
-                    @@ newMqttClock mqtt
+          runConsole $
+            runReader HomeEnv {..} $
+              runMqttWith mqtt sess $
+                runConcurrent do
+                  flow $ mainLogic @@ EffMqttClock
