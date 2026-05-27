@@ -14,7 +14,7 @@
 module Main (main) where
 
 import Control.Applicative ((<**>))
-import Control.Exception (Exception, throwIO)
+import Control.Exception (Exception, displayException, throwIO)
 import Control.Exception.Safe (tryAny)
 import Control.Lens (view, (&), (.~))
 import Control.Monad.Trans.Class (lift)
@@ -378,6 +378,7 @@ postMackerelS ::
   , Reader HomeEnv :> es
   , Concurrent :> es
   , ToMackerelMetrics a
+  , Console :> es
   ) =>
   ClSF (Eff es) cl a ()
 postMackerelS = proc stt -> do
@@ -401,22 +402,18 @@ instance ToJSON MackerelMetrics where
       , "value" A..= value
       ]
 
--- >>> import Data.Time
--- >>> A.encode . floor . utcTimeToPOSIXSeconds <$> getCurrentTime
--- "1779888908"
-
 class ToMackerelMetrics a where
   toMetrics :: a -> [MackerelMetrics]
 
 instance ToMackerelMetrics ESPStatus where
   toMetrics stt =
     [ MackerelEntry
-        { name = "espresense." <> stt.sensor <> ".distance"
+        { name = "espresense.distance." <> stt.sensor
         , time = stt.timestamp
         , value = A.Number (realToFrac stt.distance)
         }
     , MackerelEntry
-        { name = "espresense." <> stt.sensor <> ".variance"
+        { name = "espresense.variance." <> stt.sensor
         , time = stt.timestamp
         , value = A.Number (realToFrac stt.var)
         }
@@ -425,29 +422,31 @@ instance ToMackerelMetrics ESPStatus where
 instance ToMackerelMetrics SesameStatus where
   toMetrics stt =
     [ MackerelEntry
-        { name = "sesame." <> stt.name <> ".position"
+        { name = "sesame.position." <> stt.name
         , time = stt.lastUpdated
         , value = A.toJSON stt.position
         }
     , MackerelEntry
-        { name = "sesame." <> stt.name <> ".lockCurrentState"
+        { name = "sesame.lockCurrentState." <> stt.name
         , time = stt.lastUpdated
-        , value = A.toJSON stt.lockCurrentState
+        , value = case stt.lockCurrentState of
+            LOCKED -> A.Number 1
+            UNLOCKED -> A.Number 0
         }
     , MackerelEntry
-        { name = "sesame." <> stt.name <> ".batteryVoltage"
+        { name = "sesame.batteryVoltage." <> stt.name
         , time = stt.lastUpdated
         , value = A.toJSON stt.batteryVoltage
         }
     , MackerelEntry
-        { name = "sesame." <> stt.name <> ".batteryLevel"
+        { name = "sesame.batteryLevel." <> stt.name
         , time = stt.lastUpdated
         , value = A.toJSON stt.batteryLevel
         }
     , MackerelEntry
-        { name = "sesame." <> stt.name <> ".statusLowBattery"
+        { name = "sesame.statusLowBattery." <> stt.name
         , time = stt.lastUpdated
-        , value = A.toJSON stt.statusLowBattery
+        , value = if stt.statusLowBattery then A.Number 1 else A.Number 0
         }
     ]
 
@@ -455,12 +454,22 @@ postMackerel ::
   ( Concurrent :> es
   , Wreq :> es
   , ToMackerelMetrics s
+  , Console :> es
   ) =>
   MackerelConfig -> s -> Eff es ()
 postMackerel MackerelConfig {..} s = do
   let url = "https://api.mackerelio.com/api/v0/services/" <> T.unpack service <> "/tsdb"
-      opts = W.defaults & W.header "X-Api-Key" .~ [TE.encodeUtf8 apiKey]
-  void $ forkIO $ void $ tryAny $ postWith opts url $ A.encode $ toMetrics s
+      opts =
+        W.defaults
+          & W.header "X-Api-Key" .~ [TE.encodeUtf8 apiKey]
+          & W.header "Content-Type" .~ ["application/json"]
+  void $ forkIO $ tryAnyReport $ postWith opts url $ A.encode $ toMetrics s
+
+tryAnyReport :: (Console :> es) => Eff es a -> Eff es ()
+tryAnyReport act = do
+  tryAny act >>= \case
+    Left err -> Eff.putStrLn $ TE.encodeUtf8 $ T.pack $ "Failed to post to Mackerel: " <> displayException err
+    Right _ -> pure ()
 
 aggregateESPStatus ::
   BehaviourF (Eff es) UTCTime (Maybe ESPStatus) (HashMap (ESPSensorName, ESPDeviceId) ESPSensorState)
