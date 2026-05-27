@@ -15,7 +15,8 @@ module Main (main) where
 
 import Control.Applicative ((<**>))
 import Control.Exception (Exception, throwIO)
-import Control.Lens (view)
+import Control.Exception.Safe (tryAny)
+import Control.Lens (view, (&), (.~))
 import Control.Monad.Trans.Class (lift)
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Aeson qualified as A
@@ -30,12 +31,15 @@ import Data.List.NonEmpty qualified as NE
 import Data.String (IsString)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Effectful
-import Effectful.Concurrent (runConcurrent)
+import Effectful.Concurrent (Concurrent, forkIO, runConcurrent)
 import Effectful.Console.ByteString (Console, runConsole)
 import Effectful.Console.ByteString qualified as Eff
 import Effectful.Network.Mqtt
 import Effectful.Reader.Static (Reader, asks, runReader)
+import Effectful.Wreq (Wreq, postWith, runWreq)
+import Effectful.Wreq qualified as W
 import FRP.Rhine
 import GHC.Generics (Generic)
 import Home.Reactive.MQTT
@@ -114,9 +118,17 @@ data Config = Config
   , password :: !(Maybe T.Text)
   , espresense :: !(Maybe ESPresenseConfig)
   , sesame :: !(Maybe SesameConfig)
+  , mackerel :: !(Maybe MackerelConfig)
   }
   deriving (Show, Eq, Ord, Generic)
   deriving (HasCodec) via TomlTable Config
+
+data MackerelConfig = MackerelConfig
+  { service :: !T.Text
+  , apiKey :: !T.Text
+  }
+  deriving (Show, Eq, Ord, Generic)
+  deriving (HasItemCodec, HasCodec) via TomlTable MackerelConfig
 
 data CLIOpts = CLIOpts {configFile :: !FilePath}
   deriving (Show, Eq, Ord, Generic)
@@ -182,6 +194,7 @@ data HomeEnv = HomeEnv
   { mqtt :: {-# UNPACK #-} !MqttClient
   , sesame :: {-# UNPACK #-} !(Maybe SesameEnv)
   , espresense :: !(Maybe ESPresenseConfig)
+  , mackerel :: !(Maybe MackerelConfig)
   }
   deriving (Generic)
 
@@ -356,6 +369,60 @@ parseESPStatusS = proc msg -> do
   TimeInfo {..} <- timeInfo -< ()
   returnA -< uncurry (buildESPStatus absolute) <$> parseRawESPStatus msg
 
+sendESPToMackerel ::
+  (Reader HomeEnv :> es, Wreq :> es, Concurrent :> es) =>
+  ClSF (Eff es) EffMqttClock (Maybe ESPStatus) ()
+sendESPToMackerel = void $ mapMaybeS postMackerelS
+
+postMackerelS :: (Wreq :> es, Reader HomeEnv :> es, Concurrent :> es) => ClSF (Eff es) cl ESPStatus ()
+postMackerelS = proc stt -> do
+  mackerel <- constMCl (asks @HomeEnv $ view #mackerel) -< ()
+  case mackerel of
+    Just cfg -> arrMCl (uncurry postMackerel) -< (cfg, stt)
+    Nothing -> returnA -< ()
+
+data MackerelMetrics = MackerelEntry
+  { name :: !T.Text
+  , time :: !UTCTime
+  , value :: !A.Value
+  }
+  deriving (Show, Eq, Ord, Generic)
+
+instance ToJSON MackerelMetrics where
+  toJSON (MackerelEntry {..}) =
+    A.object
+      [ "name" A..= name
+      , "time" A..= floor @_ @Int (utcTimeToPOSIXSeconds time)
+      , "value" A..= value
+      ]
+
+-- >>> import Data.Time
+-- >>> A.encode . floor . utcTimeToPOSIXSeconds <$> getCurrentTime
+-- "1779888908"
+
+class ToMackerelMetrics a where
+  toMetrics :: a -> [MackerelMetrics]
+
+instance ToMackerelMetrics ESPStatus where
+  toMetrics stt =
+    [ MackerelEntry
+        { name = "espresense." <> stt.sensor <> ".distance"
+        , time = stt.timestamp
+        , value = A.Number (realToFrac stt.distance)
+        }
+    , MackerelEntry
+        { name = "espresense." <> stt.sensor <> ".variance"
+        , time = stt.timestamp
+        , value = A.Number (realToFrac stt.var)
+        }
+    ]
+
+postMackerel :: (Concurrent :> es, Wreq :> es, ToMackerelMetrics s) => MackerelConfig -> s -> Eff es ()
+postMackerel MackerelConfig {..} s = do
+  let url = "https://api.mackerelio.com/api/v0/services/" <> T.unpack service <> "/tsdb"
+      opts = W.defaults & W.header "X-Api-Key" .~ [TE.encodeUtf8 apiKey]
+  void $ forkIO $ void $ tryAny $ postWith opts url $ A.encode $ toMetrics s
+
 aggregateESPStatus ::
   BehaviourF (Eff es) UTCTime (Maybe ESPStatus) (HashMap (ESPSensorName, ESPDeviceId) ESPSensorState)
 aggregateESPStatus = feedback HM.empty $ arr \(!mest, !prev) ->
@@ -372,15 +439,21 @@ aggregateESPStatus = feedback HM.empty $ arr \(!mest, !prev) ->
           !new = HM.insert (stt.sensor, stt.id) ssst prev
        in (new, new)
 
-processESP :: (IOE :> es, Console :> es) => ClSF (Eff es) EffMqttClock Message ()
+processESP ::
+  ( IOE :> es
+  , Console :> es
+  , Reader HomeEnv :> es
+  , Wreq :> es
+  , Concurrent :> es
+  ) =>
+  ClSF (Eff es) EffMqttClock Message ()
 processESP =
   parseESPStatusS
     >-> reportErrors
-    >-> aggregateESPStatus
-    >-> arrMCl (liftIO . print)
+    >-> void (sendESPToMackerel &&& (aggregateESPStatus >-> arrMCl (liftIO . print)))
 
 mainLogic ::
-  (IOE :> es, Reader HomeEnv :> es, Console :> es) =>
+  (IOE :> es, Reader HomeEnv :> es, Console :> es, Wreq :> es, Concurrent :> es) =>
   ClSF (Eff es) EffMqttClock () ()
 mainLogic = void (processSesame &&& processESP) <-< tagS
 
@@ -414,10 +487,12 @@ main = do
               }
       let sesame = fromSesameConfig <$> config.sesame
           espresense = config.espresense
+          mackerel = config.mackerel
       withMqttClient mqttCfg \mqtt sess ->
         runEff $
           runConsole $
-            runReader HomeEnv {..} $
-              runMqttWith mqtt sess $
-                runConcurrent do
-                  flow $ mainLogic @@ EffMqttClock
+            runWreq $
+              runReader HomeEnv {..} $
+                runMqttWith mqtt sess $
+                  runConcurrent do
+                    flow $ mainLogic @@ EffMqttClock

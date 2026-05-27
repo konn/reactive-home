@@ -15,7 +15,6 @@ import Data.Time.Clock.POSIX (getPOSIXTime)
 import Network.Mqtt.Client
 import Network.Mqtt.Connection (Conn)
 import Network.Mqtt.Connection.TCP (clientSettings, tcpConnection)
-import Network.Mqtt.Message (Message (..))
 import Network.Mqtt.Types
 import System.Timeout (timeout)
 import Test.Tasty

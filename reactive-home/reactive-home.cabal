@@ -93,7 +93,7 @@ executable reactive-home
   ghc-options:
     -threaded
     -rtsopts
-    -with-rtsopts=-N
+    "-with-rtsopts=-N --nonmoving-gc"
 
   build-depends:
     aeson,
@@ -109,9 +109,11 @@ executable reactive-home
     rhine,
     safe-exceptions,
     text,
+    time,
     tomland,
     transformers,
     unordered-containers,
+    wreq-effectful,
 
 test-suite reactive-home-test
   import: defaults
