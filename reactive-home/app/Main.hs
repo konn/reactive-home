@@ -285,13 +285,17 @@ processSesame ::
   ( IOE :> es
   , Reader HomeEnv :> es
   , Console :> es
+  , Wreq :> es
+  , Concurrent :> es
   ) =>
   ClSF (Eff es) EffMqttClock Message ()
 processSesame =
   sesameStatuses
     >-> reportErrors
-    >-> aggregateSesameStatus
-    >-> arrMCl (liftIO . print)
+    >-> void
+      ( mapMaybeS postMackerelS
+          &&& (aggregateSesameStatus >-> arrMCl (liftIO . print))
+      )
 
 type ESPSensorName = T.Text
 
@@ -369,12 +373,13 @@ parseESPStatusS = proc msg -> do
   TimeInfo {..} <- timeInfo -< ()
   returnA -< uncurry (buildESPStatus absolute) <$> parseRawESPStatus msg
 
-sendESPToMackerel ::
-  (Reader HomeEnv :> es, Wreq :> es, Concurrent :> es) =>
-  ClSF (Eff es) EffMqttClock (Maybe ESPStatus) ()
-sendESPToMackerel = void $ mapMaybeS postMackerelS
-
-postMackerelS :: (Wreq :> es, Reader HomeEnv :> es, Concurrent :> es) => ClSF (Eff es) cl ESPStatus ()
+postMackerelS ::
+  ( Wreq :> es
+  , Reader HomeEnv :> es
+  , Concurrent :> es
+  , ToMackerelMetrics a
+  ) =>
+  ClSF (Eff es) cl a ()
 postMackerelS = proc stt -> do
   mackerel <- constMCl (asks @HomeEnv $ view #mackerel) -< ()
   case mackerel of
@@ -417,7 +422,41 @@ instance ToMackerelMetrics ESPStatus where
         }
     ]
 
-postMackerel :: (Concurrent :> es, Wreq :> es, ToMackerelMetrics s) => MackerelConfig -> s -> Eff es ()
+instance ToMackerelMetrics SesameStatus where
+  toMetrics stt =
+    [ MackerelEntry
+        { name = "sesame." <> stt.name <> ".position"
+        , time = stt.lastUpdated
+        , value = A.toJSON stt.position
+        }
+    , MackerelEntry
+        { name = "sesame." <> stt.name <> ".lockCurrentState"
+        , time = stt.lastUpdated
+        , value = A.toJSON stt.lockCurrentState
+        }
+    , MackerelEntry
+        { name = "sesame." <> stt.name <> ".batteryVoltage"
+        , time = stt.lastUpdated
+        , value = A.toJSON stt.batteryVoltage
+        }
+    , MackerelEntry
+        { name = "sesame." <> stt.name <> ".batteryLevel"
+        , time = stt.lastUpdated
+        , value = A.toJSON stt.batteryLevel
+        }
+    , MackerelEntry
+        { name = "sesame." <> stt.name <> ".statusLowBattery"
+        , time = stt.lastUpdated
+        , value = A.toJSON stt.statusLowBattery
+        }
+    ]
+
+postMackerel ::
+  ( Concurrent :> es
+  , Wreq :> es
+  , ToMackerelMetrics s
+  ) =>
+  MackerelConfig -> s -> Eff es ()
 postMackerel MackerelConfig {..} s = do
   let url = "https://api.mackerelio.com/api/v0/services/" <> T.unpack service <> "/tsdb"
       opts = W.defaults & W.header "X-Api-Key" .~ [TE.encodeUtf8 apiKey]
@@ -450,7 +489,7 @@ processESP ::
 processESP =
   parseESPStatusS
     >-> reportErrors
-    >-> void (sendESPToMackerel &&& (aggregateESPStatus >-> arrMCl (liftIO . print)))
+    >-> void (mapMaybeS postMackerelS &&& (aggregateESPStatus >-> arrMCl (liftIO . print)))
 
 mainLogic ::
   (IOE :> es, Reader HomeEnv :> es, Console :> es, Wreq :> es, Concurrent :> es) =>
