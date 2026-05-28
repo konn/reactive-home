@@ -14,7 +14,6 @@ tested-with:
   ghc ==9.12.4
 
 data-dir: data
-
 extra-doc-files:
   CHANGELOG.md
   README.md
@@ -95,7 +94,7 @@ executable reactive-home
   ghc-options:
     -threaded
     -rtsopts
-    "-with-rtsopts=-N --nonmoving-gc"
+    "-with-rtsopts=-N --copying-gc"
 
   build-depends:
     aeson,
