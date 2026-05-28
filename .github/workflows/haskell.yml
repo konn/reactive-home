@@ -216,6 +216,8 @@ jobs:
             !**/Setup.hs
             !**/Setup.lhs
             !dist-newstyle/**
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   cabal-check:
     name: Cabal Check
