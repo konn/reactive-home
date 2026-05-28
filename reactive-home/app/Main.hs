@@ -282,8 +282,7 @@ aggregateSesameStatus =
      in (new, new)
 
 processSesame ::
-  ( IOE :> es
-  , Reader HomeEnv :> es
+  ( Reader HomeEnv :> es
   , Console :> es
   , Wreq :> es
   , Concurrent :> es
@@ -293,9 +292,7 @@ processSesame =
   sesameStatuses
     >-> reportErrors
     >-> void
-      ( mapMaybeS postMackerelS
-          &&& (aggregateSesameStatus >-> arrMCl (liftIO . print))
-      )
+      (mapMaybeS postMackerelS &&& aggregateSesameStatus)
 
 type ESPSensorName = T.Text
 
@@ -488,8 +485,7 @@ aggregateESPStatus = feedback HM.empty $ arr \(!mest, !prev) ->
        in (new, new)
 
 processESP ::
-  ( IOE :> es
-  , Console :> es
+  ( Console :> es
   , Reader HomeEnv :> es
   , Wreq :> es
   , Concurrent :> es
@@ -498,10 +494,10 @@ processESP ::
 processESP =
   parseESPStatusS
     >-> reportErrors
-    >-> void (mapMaybeS postMackerelS &&& (aggregateESPStatus >-> arrMCl (liftIO . print)))
+    >-> void (mapMaybeS postMackerelS &&& aggregateESPStatus)
 
 mainLogic ::
-  (IOE :> es, Reader HomeEnv :> es, Console :> es, Wreq :> es, Concurrent :> es) =>
+  (Reader HomeEnv :> es, Console :> es, Wreq :> es, Concurrent :> es) =>
   ClSF (Eff es) EffMqttClock () ()
 mainLogic = void (processSesame &&& processESP) <-< tagS
 
