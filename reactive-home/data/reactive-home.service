@@ -1,0 +1,27 @@
+[Unit]
+Description=reactive-home FRP home-automation service
+# NOTE: a *user* service runs in a separate systemd instance from system services,
+# so the unit references below are best-effort intent only — the user manager
+# silently ignores ordering against system units (mosquitto, network-online).
+Wants=network-online.target mosquitto.service
+After=network-online.target mosquitto.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+Environment=LC_ALL=C.UTF-8
+ExecStart=%h/.local/bin/reactive-home --config %h/.config/reactive-home.toml
+
+# Stop the service by sending SIGINT; the GHC runtime turns it into a graceful
+# shutdown. `systemctl --user stop reactive-home` will use this signal too.
+KillSignal=SIGINT
+
+# Always restart on exit, after a short backoff...
+Restart=always
+RestartSec=5
+# ...except when it exited because of SIGINT (a deliberate stop) — without this,
+# `Restart=always` would resurrect a manual `kill -INT`.
+RestartPreventExitStatus=SIGINT
+
+[Install]
+WantedBy=default.target
