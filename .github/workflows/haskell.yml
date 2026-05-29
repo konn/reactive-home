@@ -3,6 +3,10 @@ on:
   push: { branches: ["main"] }
   pull_request:
 
+env:
+  SIMPLEBLE_VERSION: 0.14.0
+  SIMPLEBLE_LINUX_AARCH64_SHA256: 12e9f154c6edda5cac283ad35be161a02b1bf194e0e5d16f12ef5a22e4e8de66
+
 jobs:
   ci-enumerate:
     name: Enumerate GHC Versions
@@ -59,6 +63,21 @@ jobs:
           enable-stack: false
           cabal-version: ${{env.cabal-version}}
           ghc-version: ${{env.ghc}}
+      - name: Install SimpleBLE
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config unzip
+          curl -fsSL \
+            "https://github.com/simpleble/simpleble/releases/download/v${SIMPLEBLE_VERSION}/libsimpleble_linux-aarch64.zip" \
+            -o /tmp/libsimpleble_linux-aarch64.zip
+          echo "${SIMPLEBLE_LINUX_AARCH64_SHA256}  /tmp/libsimpleble_linux-aarch64.zip" | sha256sum -c -
+          mkdir -p /tmp/simpleble
+          unzip -q /tmp/libsimpleble_linux-aarch64.zip -d /tmp/simpleble
+          sudo cp -a /tmp/simpleble/shared/include/. /usr/local/include/
+          sudo cp -a /tmp/simpleble/shared/lib/. /usr/local/lib/
+          sudo ldconfig
       - name: Restore ~/.cabal/store
         uses: actions/cache/restore@v5
         with:
@@ -150,6 +169,21 @@ jobs:
           name: ${{env.artifact}}.tar.zst
       - name: Decompress
         run: tar xaf ${{env.artifact}}.tar.zst
+      - name: Install SimpleBLE
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config unzip
+          curl -fsSL \
+            "https://github.com/simpleble/simpleble/releases/download/v${SIMPLEBLE_VERSION}/libsimpleble_linux-aarch64.zip" \
+            -o /tmp/libsimpleble_linux-aarch64.zip
+          echo "${SIMPLEBLE_LINUX_AARCH64_SHA256}  /tmp/libsimpleble_linux-aarch64.zip" | sha256sum -c -
+          mkdir -p /tmp/simpleble
+          unzip -q /tmp/libsimpleble_linux-aarch64.zip -d /tmp/simpleble
+          sudo cp -a /tmp/simpleble/shared/include/. /usr/local/include/
+          sudo cp -a /tmp/simpleble/shared/lib/. /usr/local/lib/
+          sudo ldconfig
       - name: Wait for the MQTT broker
         shell: bash
         run: |
