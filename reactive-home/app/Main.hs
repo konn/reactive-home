@@ -20,6 +20,7 @@ import Control.Lens (view, (&), (.~))
 import Control.Monad.Trans.Class (lift)
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Aeson qualified as A
+import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as LBS
 import Data.Foldable qualified as F
 import Data.Functor (void, (<&>))
@@ -35,6 +36,7 @@ import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Effectful
 import Effectful.Concurrent (Concurrent, forkIO, runConcurrent)
 import Effectful.Console.ByteString (Console, runConsole)
+import Effectful.Console.ByteString qualified as Console
 import Effectful.Console.ByteString qualified as Eff
 import Effectful.Network.Mqtt
 import Effectful.Reader.Static (Reader, asks, runReader)
@@ -49,8 +51,19 @@ import Toml hiding (first, map)
 class ToTopicFilter a where
   toTopicFilters :: a -> [TopicFilter]
 
+data ESPRoom = ESPRoom
+  { name :: !T.Text
+  , threshold :: !Int
+  , max_distance :: !Int
+  , timeout :: !Int
+  , active_scan :: !Bool
+  }
+  deriving (Show, Eq, Ord, Generic)
+  deriving (HasCodec, HasItemCodec) via TomlTable ESPRoom
+
 data ESPresenseConfig = ESPresenseConfig
   { devices :: ![T.Text]
+  , rooms :: ![ESPRoom]
   }
   deriving (Show, Eq, Ord, Generic)
   deriving (HasCodec, HasItemCodec) via TomlTable ESPresenseConfig
@@ -60,6 +73,10 @@ instance ToTopicFilter ESPresenseConfig where
     [ "espresense" <> "devices" <> TopicFilter device <> wildOne
     | device <- devices
     ]
+      <> [ "espresense" <> "rooms" <> TopicFilter room.name <> key
+         | room <- rooms
+         , key <- ["status", "telemetry"]
+         ]
 
 data SesameDevice = SesameDevice {uuid :: SesameUUID}
   deriving (Show, Eq, Ord, Generic)
@@ -499,7 +516,7 @@ processESP =
 mainLogic ::
   (Reader HomeEnv :> es, Console :> es, Wreq :> es, Concurrent :> es) =>
   ClSF (Eff es) EffMqttClock () ()
-mainLogic = void (processSesame &&& processESP) <-< tagS
+mainLogic = void (arrMCl (Console.putStrLn . BS8.pack . show) &&& processSesame &&& processESP) <-< tagS
 
 main :: IO ()
 main = do
