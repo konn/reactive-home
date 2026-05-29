@@ -103,6 +103,7 @@ resolveBluezConfig client config = do
         Nothing -> do
           debug config ("BlueZ device not found by address " <> macAddress <> "; starting discovery")
           discoverDevice client config.discoveryTimeoutSeconds macAddress
+  resetDeviceConnection client config device objects
   debug config ("connecting BlueZ device " <> formatObjectPath device)
   callNoBody client device "org.bluez.Device1" "Connect"
   objectsWithServices <-
@@ -151,6 +152,22 @@ needsCharacteristicDiscovery :: BluezConfig -> Bool
 needsCharacteristicDiscovery config =
   maybe True (const False) config.writeCharacteristicPath
     || maybe True (const False) config.notifyCharacteristicPath
+
+resetDeviceConnection :: DBus.Client -> BluezConfig -> ObjectPath -> ManagedObjects -> IO ()
+resetDeviceConnection client config device objects =
+  if isDeviceConnected device objects
+    then do
+      debug config ("disconnecting stale BlueZ device session " <> formatObjectPath device)
+      ignoreErrors (callNoBody client device "org.bluez.Device1" "Disconnect")
+      disconnected <-
+        poll config.discoveryTimeoutSeconds do
+          objects' <- getManagedObjects client
+          pure
+            if isDeviceConnected device objects'
+              then Nothing
+              else Just ()
+      maybe (debug config "timed out waiting for BlueZ disconnect; continuing with connect") (const (debug config "BlueZ device disconnected before reconnect")) disconnected
+    else pure ()
 
 poll :: Int -> IO (Maybe a) -> IO (Maybe a)
 poll timeoutSeconds action = go (max 1 timeoutSeconds * 10)
@@ -202,6 +219,13 @@ findCharacteristic uuid device =
 
 hasCharacteristic :: String -> ObjectPath -> ManagedObjects -> Bool
 hasCharacteristic uuid device = maybe False (const True) . findCharacteristic uuid device
+
+isDeviceConnected :: ObjectPath -> ManagedObjects -> Bool
+isDeviceConnected device objects =
+  maybe False id do
+    interfaces <- Map.lookup device objects
+    props <- Map.lookup "org.bluez.Device1" interfaces
+    lookupProperty "Connected" props
 
 findAdvertisementData :: ObjectPath -> ManagedObjects -> Maybe ByteString
 findAdvertisementData device objects =
