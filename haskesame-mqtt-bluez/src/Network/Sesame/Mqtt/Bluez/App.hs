@@ -23,6 +23,7 @@ import Network.Sesame.Mqtt (BridgeConfig (..), BridgeDevice (..), ConnectedBridg
 import Network.Sesame.Transport (SesameTransport (..))
 import Network.Sesame.Transport.Bluez (BluezConfig (..), connectBluez)
 import Network.Sesame.Types (Advertisement (..), SecretKey (..))
+import System.IO (BufferMode (LineBuffering), hSetBuffering, stderr, stdout)
 import Toml hiding (map)
 
 data AppConfig = AppConfig
@@ -68,7 +69,9 @@ configCodec :: TomlCodec AppConfig
 configCodec = genericCodec
 
 runApp :: AppConfig -> IO ()
-runApp config =
+runApp config = do
+  hSetBuffering stdout LineBuffering
+  hSetBuffering stderr LineBuffering
   Mqtt.withClient (mqttOptions config.mqtt) Mqtt.defaultAutoReconnectConfig \mqtt _ ->
     prepareDevices (bridgeDebugLogging config.bridge) config.devices >>= runBridge mqtt (bridgeConfig config.bridge)
 

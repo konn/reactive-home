@@ -6,6 +6,7 @@ module Network.Sesame.Transport.Bluez (
 
 import Control.Applicative ((<|>))
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, bracket_, try)
 import DBus
@@ -22,6 +23,7 @@ import Network.Sesame.Codec
 import Network.Sesame.Exception
 import Network.Sesame.Transport
 import System.IO (hPutStrLn, stderr)
+import System.IO.Unsafe (unsafePerformIO)
 
 data BluezConfig = BluezConfig
   { deviceAddress :: !(Maybe String)
@@ -228,6 +230,9 @@ advertisementBytes :: Variant -> Maybe ByteString
 advertisementBytes value =
   fromVariant value <|> (BS.pack <$> fromVariant @[Word8] value)
 
+variantBytes :: Variant -> Maybe ByteString
+variantBytes = advertisementBytes
+
 looksLikeSesameAdvertisement :: ByteString -> Bool
 looksLikeSesameAdvertisement bytes =
   BS.length bytes == 19 && either (const False) (const True) (decodeAdvertisement bytes)
@@ -270,9 +275,8 @@ handleSignal config queue state signalMessage =
       , iface == "org.bluez.GattCharacteristic1"
       , Just (changed :: Map String Variant) <- fromVariant changedVar
       , Just valueVar <- Map.lookup "Value" changed
-      , Just (value :: [Word8]) <- fromVariant valueVar ->
+      , Just bytes <- variantBytes valueVar ->
           do
-            let bytes = BS.pack value
             event <-
               atomically do
                 current <- readTVar state
@@ -287,7 +291,7 @@ handleSignal config queue state signalMessage =
       | Just (iface :: String) <- fromVariant ifaceVar
       , iface == "org.bluez.GattCharacteristic1"
       , Just (changed :: Map String Variant) <- fromVariant changedVar ->
-          debug config ("GattCharacteristic1 change without Value: keys=" <> show (Map.keys changed))
+          debug config ("GattCharacteristic1 change without decodable Value: keys=" <> show (Map.keys changed))
     _ -> pure ()
 
 handleDeviceSignal :: BluezConfig -> TQueue (Either SesameTransportError (ByteString, Bool)) -> Signal -> IO ()
@@ -334,5 +338,12 @@ callNoBody client path iface member =
 debug :: BluezConfig -> String -> IO ()
 debug config message =
   if config.debugLogging
-    then hPutStrLn stderr ("[haskesame-transport-bluez] " <> message)
+    then withDebugLock (hPutStrLn stderr ("[haskesame-transport-bluez] " <> message))
     else pure ()
+
+withDebugLock :: IO () -> IO ()
+withDebugLock action = modifyMVar_ debugLock \() -> action *> pure ()
+
+debugLock :: MVar ()
+debugLock = unsafePerformIO (newMVar ())
+{-# NOINLINE debugLock #-}
