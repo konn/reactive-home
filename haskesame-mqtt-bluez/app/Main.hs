@@ -4,7 +4,7 @@ import Control.Applicative ((<**>))
 import Network.Sesame.Mqtt.Bluez.App (loadConfig, runApp)
 import Options.Applicative qualified as Opts
 
-newtype CLIOpts = CLIOpts {configDir :: FilePath}
+newtype CLIOpts = CLIOpts {configFile :: FilePath}
 
 cliOptsP :: Opts.ParserInfo CLIOpts
 cliOptsP =
@@ -16,15 +16,15 @@ cliOptsP =
     p =
       CLIOpts
         <$> Opts.strOption
-          ( Opts.long "config-dir"
+          ( Opts.long "config"
               <> Opts.short 'c'
-              <> Opts.metavar "DIR"
-              <> Opts.value "."
+              <> Opts.metavar "FILE"
+              <> Opts.value "config.toml"
               <> Opts.showDefault
-              <> Opts.help "Directory containing config.toml"
+              <> Opts.help "TOML configuration file"
           )
 
 main :: IO ()
 main = do
-  CLIOpts {configDir} <- Opts.execParser cliOptsP
-  loadConfig configDir >>= runApp
+  CLIOpts {configFile} <- Opts.execParser cliOptsP
+  loadConfig configFile >>= runApp

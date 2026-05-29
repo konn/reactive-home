@@ -4,7 +4,6 @@ module Network.Sesame.Mqtt.Bluez.App (
   BridgeTomlConfig (..),
   DeviceConfig (..),
   configCodec,
-  configFileIn,
   loadConfig,
   runApp,
 ) where
@@ -25,7 +24,6 @@ import Network.Sesame.Mqtt (BridgeConfig (..), BridgeDevice (..), runBridge)
 import Network.Sesame.Transport (SesameTransport (..))
 import Network.Sesame.Transport.Bluez (BluezConfig (..), connectBluez)
 import Network.Sesame.Types (SecretKey (..))
-import System.FilePath ((</>))
 import Toml hiding (map)
 
 data AppConfig = AppConfig
@@ -67,9 +65,6 @@ data DeviceConfig = DeviceConfig
 configCodec :: TomlCodec AppConfig
 configCodec = genericCodec
 
-configFileIn :: FilePath -> FilePath
-configFileIn dir = dir </> "config.toml"
-
 runApp :: AppConfig -> IO ()
 runApp config =
   Mqtt.withClient (mqttOptions config.mqtt) Mqtt.defaultAutoReconnectConfig \mqtt _ ->
@@ -77,8 +72,8 @@ runApp config =
       runBridge mqtt (bridgeConfig config.bridge) (map (.bridgeDevice) devices)
 
 loadConfig :: FilePath -> IO AppConfig
-loadConfig configDir =
-  either (fail . show) pure =<< decodeFileExact configCodec (configFileIn configDir)
+loadConfig configFile =
+  either (fail . show) pure =<< decodeFileExact configCodec configFile
 
 mqttOptions :: MqttConfig -> Mqtt.ConnectOptions
 mqttOptions config =

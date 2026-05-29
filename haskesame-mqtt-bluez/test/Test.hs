@@ -1,6 +1,6 @@
 module Main (main) where
 
-import Network.Sesame.Mqtt.Bluez.App (configFileIn)
+import Network.Sesame.Mqtt.Bluez.App (configCodec)
 
 main :: IO ()
-main = configFileIn "." `seq` putStrLn "Test suite not yet implemented"
+main = configCodec `seq` putStrLn "Test suite not yet implemented"

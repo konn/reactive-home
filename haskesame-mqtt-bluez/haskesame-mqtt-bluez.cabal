@@ -62,7 +62,6 @@ library
   build-depends:
     bytestring,
     dbus,
-    filepath,
     haskesame-core,
     haskesame-mqtt,
     haskesame-transport-bluez,

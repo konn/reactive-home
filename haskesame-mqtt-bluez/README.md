@@ -5,10 +5,10 @@ Executable MQTT bridge for Sesame 5 over BlueZ/D-Bus.
 Run with:
 
 ```sh
-haskesame-mqtt-bluez --config-dir /etc/haskesame-mqtt-bluez
+haskesame-mqtt-bluez --config /etc/haskesame-mqtt-bluez/config.toml
 ```
 
-The app reads `/etc/haskesame-mqtt-bluez/config.toml`.
+The app reads the specified TOML file. If `--config` is omitted, it reads `config.toml` from the current directory.
 
 Example:
 
