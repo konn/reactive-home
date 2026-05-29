@@ -1,7 +1,7 @@
 cabal-version: 3.4
-name: haskesame-core
+name: haskesame-transport-bluez
 version: 0.1.0.0
-description: Please see the README on GitHub at <https://github.com/konn/reactive-home/haskesame-core#readme>
+description: Please see the README on GitHub at <https://github.com/konn/reactive-home/haskesame-transport-bluez#readme>
 homepage: https://github.com/konn/reactive-home#readme
 bug-reports: https://github.com/konn/reactive-home/issues
 author: Hiromi ISHII
@@ -20,11 +20,11 @@ extra-doc-files:
 source-repository head
   type: git
   location: https://github.com/konn/reactive-home
-  subdir: haskesame-core
+  subdir: haskesame-transport-bluez
 
 common defaults
-  autogen-modules: Paths_haskesame_core
-  other-modules: Paths_haskesame_core
+  autogen-modules: Paths_haskesame_transport_bluez
+  other-modules: Paths_haskesame_transport_bluez
   ghc-options:
     -Wall
     -Wcompat
@@ -57,26 +57,17 @@ library
   import: defaults
   hs-source-dirs: src
   -- cabal-gild: discover src --exclude=src/**/Internal.hs --exclude=src/**/Internal/**/*.hs
-  exposed-modules:
-    Network.Sesame
-    Network.Sesame.Client
-    Network.Sesame.Codec
-    Network.Sesame.Crypto
-    Network.Sesame.Exception
-    Network.Sesame.Transport
-    Network.Sesame.Types
-
+  exposed-modules: Network.Sesame.Transport.Bluez
   -- cabal-gild: discover src --include=src/**/Internal.hs --include=src/**/Internal/**/*.hs
   other-modules:
   build-depends:
     bytestring,
-    crypton,
-    memory,
+    containers,
+    dbus,
+    haskesame-core,
     stm,
-    text,
-    uuid,
 
-test-suite haskesame-core-test
+test-suite haskesame-transport-bluez-test
   import: defaults
   type: exitcode-stdio-1.0
   main-is: Test.hs
@@ -89,9 +80,9 @@ test-suite haskesame-core-test
     -rtsopts
     -with-rtsopts=-N
 
-  build-depends: haskesame-core
+  build-depends: haskesame-transport-bluez
 
-test-suite haskesame-core-doctest
+test-suite haskesame-transport-bluez-doctest
   import: defaults
   type: exitcode-stdio-1.0
   hs-source-dirs: doctest
@@ -104,4 +95,4 @@ test-suite haskesame-core-doctest
 
   build-depends:
     doctest-parallel,
-    haskesame-core,
+    haskesame-transport-bluez,
