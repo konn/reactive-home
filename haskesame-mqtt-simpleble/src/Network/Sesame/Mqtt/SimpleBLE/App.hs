@@ -53,7 +53,7 @@ data BridgeTomlConfig = BridgeTomlConfig
 
 data DeviceConfig = DeviceConfig
   { uuid :: !(Maybe Text)
-  , mac_address :: !Text
+  , mac_address :: !(Maybe Text)
   , secret_key :: !Text
   , service_uuid :: !(Maybe Text)
   , write_characteristic_uuid :: !(Maybe Text)
@@ -104,11 +104,15 @@ connectDevices = traverse connectDevice
 connectDevice :: DeviceConfig -> IO RunningDevice
 connectDevice config = do
   secret <- either fail pure (decodeHexText "secret_key" config.secret_key)
+  configuredUuid <- traverse parseUuid config.uuid
+  case (config.mac_address, configuredUuid) of
+    (Nothing, Nothing) -> fail "either mac_address or uuid is required for SimpleBLE device discovery"
+    _ -> pure ()
   transport <-
     either (fail . show) pure
       =<< connectSimpleBLE
-        (simpleBLEConfig config)
-  uuid <- deviceUuid config transport
+        (simpleBLEConfig configuredUuid config)
+  uuid <- deviceUuid configuredUuid transport
   sesame <- Sesame.newSesame5Client transport
   _ <- Sesame.login sesame (SecretKey secret)
   pure
@@ -120,25 +124,30 @@ connectDevice config = do
 cleanupDevices :: [RunningDevice] -> IO ()
 cleanupDevices = mapM_ (.transport.closeBle)
 
-simpleBLEConfig :: DeviceConfig -> SimpleBLEConfig
-simpleBLEConfig config =
+simpleBLEConfig :: Maybe UUID.UUID -> DeviceConfig -> SimpleBLEConfig
+simpleBLEConfig uuid config =
   defaults
-    { serviceUuid = maybe defaults.serviceUuid id config.service_uuid
+    { deviceUuid = uuid
+    , serviceUuid = maybe defaults.serviceUuid id config.service_uuid
     , writeCharacteristicUuid = config.write_characteristic_uuid
     , notifyCharacteristicUuid = config.notify_characteristic_uuid
     , scanTimeoutMs = maybe defaults.scanTimeoutMs id config.scan_timeout_ms
     }
   where
-    defaults = defaultSimpleBLEConfig config.mac_address
+    defaults = defaultSimpleBLEConfig (maybe "" id config.mac_address)
 
-deviceUuid :: DeviceConfig -> SesameTransport -> IO UUID.UUID
-deviceUuid config transport =
-  case config.uuid of
-    Just uuidText -> maybe (fail ("invalid Sesame UUID: " <> T.unpack uuidText)) pure (UUID.fromString (T.unpack uuidText))
+deviceUuid :: Maybe UUID.UUID -> SesameTransport -> IO UUID.UUID
+deviceUuid configuredUuid transport =
+  case configuredUuid of
+    Just uuid -> pure uuid
     Nothing ->
       transport.advertisement >>= \case
         Right advertisement -> pure advertisement.deviceUuid
         Left err -> fail ("failed to discover Sesame UUID from advertisement: " <> show err)
+
+parseUuid :: Text -> IO UUID.UUID
+parseUuid uuidText =
+  maybe (fail ("invalid Sesame UUID: " <> T.unpack uuidText)) pure (UUID.fromString (T.unpack uuidText))
 
 decodeHexText :: String -> Text -> Either String ByteString
 decodeHexText fieldName source =

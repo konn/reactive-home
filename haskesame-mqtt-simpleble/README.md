@@ -25,10 +25,11 @@ debug_logging = true
 
 [[devices]]
 mac_address = "XX:XX:XX:XX:XX:XX"
+uuid = "00000000-0000-0000-0000-000000000000"
 secret_key = "1234567890abcdef1234567890abcdef"
 ```
 
-`uuid`, `service_uuid`, `write_characteristic_uuid`, `notify_characteristic_uuid`, and `scan_timeout_ms` may be supplied as optional overrides.
+`mac_address` and `uuid` are both optional, but at least one must be supplied. On macOS, SimpleBLE may expose a CoreBluetooth identifier instead of the real BLE MAC address, so `uuid` is the preferred selector there. `service_uuid`, `write_characteristic_uuid`, `notify_characteristic_uuid`, and `scan_timeout_ms` may be supplied as optional overrides.
 
 ## Copyright
 

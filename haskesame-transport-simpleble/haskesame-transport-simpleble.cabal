@@ -63,6 +63,7 @@ library
     simpleble-hs,
     stm,
     text,
+    uuid,
 
 test-suite haskesame-transport-simpleble-test
   import: defaults

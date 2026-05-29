@@ -36,7 +36,8 @@ login client secret = do
   token <- waitInitial client
   sessionKey <- either (throwIO . SesameCryptoException) pure (Crypto.deriveSessionKey secret token)
   cipher <- Crypto.newSesameCipher token sessionKey
-  response <- sendCommand client Nothing (SesameCommand Login (BS.take 4 sessionKey.unSessionKey))
+  either (throwIO . SesameTransportException) pure =<< client.transport.sendBle False (encodeCommand (SesameCommand Login (BS.take 4 sessionKey.unSessionKey)))
+  response <- waitResponse client (Just cipher) Login
   case response.resultCode of
     Success -> atomically (writeTVar client.cipherVar (Just cipher)) *> pure (timestampLE response.responsePayload)
     rc -> throwIO (SesameProtocolException (OperationFailed Login rc))

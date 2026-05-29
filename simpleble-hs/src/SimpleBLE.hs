@@ -74,6 +74,9 @@ C.verbatim
   \extern \"C\" void simpleble_hs_characteristics_delete(void* handle) {\n\
   \  delete static_cast<std::vector<Characteristic>*>(handle);\n\
   \}\n\
+  \extern \"C\" void simpleble_hs_manufacturer_data_delete(void* handle) {\n\
+  \  delete static_cast<std::vector<std::pair<uint16_t, ByteArray>>*>(handle);\n\
+  \}\n\
   \extern \"C\" size_t simpleble_hs_adapters_count() {\n\
   \  try { return Adapter::get_adapters().size(); } catch (...) { return 0; }\n\
   \}\n\
@@ -161,31 +164,38 @@ C.verbatim
   \extern \"C\" int simpleble_hs_characteristic_can_indicate(void* handle, size_t index) {\n\
   \  try { return static_cast<std::vector<Characteristic>*>(handle)->at(index).can_indicate() ? 1 : 0; } catch (...) { return -1; }\n\
   \}\n\
+  \extern \"C\" void* simpleble_hs_peripheral_manufacturer_data(void* handle) {\n\
+  \  try {\n\
+  \    auto data = static_cast<Peripheral*>(handle)->manufacturer_data();\n\
+  \    auto out = new std::vector<std::pair<uint16_t, ByteArray>>();\n\
+  \    out->reserve(data.size());\n\
+  \    for (auto const& entry : data) out->push_back(entry);\n\
+  \    return out;\n\
+  \  } catch (...) { return nullptr; }\n\
+  \}\n\
   \extern \"C\" size_t simpleble_hs_manufacturer_data_count(void* handle) {\n\
-  \  try { return static_cast<Peripheral*>(handle)->manufacturer_data().size(); } catch (...) { return 0; }\n\
+  \  return static_cast<std::vector<std::pair<uint16_t, ByteArray>>*>(handle)->size();\n\
   \}\n\
   \extern \"C\" int simpleble_hs_manufacturer_data_id(void* handle, size_t index) {\n\
   \  try {\n\
-  \    auto data = static_cast<Peripheral*>(handle)->manufacturer_data();\n\
-  \    if (index >= data.size()) return -1;\n\
-  \    auto it = data.begin(); std::advance(it, index);\n\
-  \    return static_cast<int>(it->first);\n\
+  \    auto data = static_cast<std::vector<std::pair<uint16_t, ByteArray>>*>(handle);\n\
+  \    if (index >= data->size()) return -1;\n\
+  \    return static_cast<int>(data->at(index).first);\n\
   \  } catch (...) { return -1; }\n\
   \}\n\
   \extern \"C\" size_t simpleble_hs_manufacturer_data_length(void* handle, size_t index) {\n\
   \  try {\n\
-  \    auto data = static_cast<Peripheral*>(handle)->manufacturer_data();\n\
-  \    if (index >= data.size()) return 0;\n\
-  \    auto it = data.begin(); std::advance(it, index);\n\
-  \    return it->second.size();\n\
+  \    auto data = static_cast<std::vector<std::pair<uint16_t, ByteArray>>*>(handle);\n\
+  \    if (index >= data->size()) return 0;\n\
+  \    return data->at(index).second.size();\n\
   \  } catch (...) { return 0; }\n\
   \}\n\
   \extern \"C\" int simpleble_hs_manufacturer_data_copy(void* handle, size_t index, uint8_t* out) {\n\
   \  try {\n\
-  \    auto data = static_cast<Peripheral*>(handle)->manufacturer_data();\n\
-  \    if (index >= data.size()) return 1;\n\
-  \    auto it = data.begin(); std::advance(it, index);\n\
-  \    std::memcpy(out, it->second.data(), it->second.size());\n\
+  \    auto data = static_cast<std::vector<std::pair<uint16_t, ByteArray>>*>(handle);\n\
+  \    if (index >= data->size()) return 1;\n\
+  \    auto payload = data->at(index).second;\n\
+  \    std::memcpy(out, payload.data(), payload.size());\n\
   \    return 0;\n\
   \  } catch (...) { return 1; }\n\
   \}\n\
@@ -258,6 +268,9 @@ foreign import ccall unsafe "&simpleble_hs_services_delete"
 
 foreign import ccall unsafe "&simpleble_hs_characteristics_delete"
   characteristicsDeleteFinalizer :: FunPtr (Ptr () -> IO ())
+
+foreign import ccall unsafe "&simpleble_hs_manufacturer_data_delete"
+  manufacturerDataDeleteFinalizer :: FunPtr (Ptr () -> IO ())
 
 foreign import ccall "wrapper"
   mkNotifyCallback :: NotifyCallback -> IO (FunPtr NotifyCallback)
@@ -335,18 +348,14 @@ peripheralServices peripheral =
 
 peripheralManufacturerData :: Peripheral -> IO [ManufacturerData]
 peripheralManufacturerData peripheral =
-  withPeripheral peripheral \ptr -> do
-    count <- [C.exp| size_t { simpleble_hs_manufacturer_data_count($(void* ptr)) } |]
-    forM [0 .. count - 1] \index -> do
-      rawId <- [C.exp| int { simpleble_hs_manufacturer_data_id($(void* ptr), $(size_t index)) } |]
-      if rawId < 0
-        then throwIO (SimpleBLEException "peripheralManufacturerData failed")
-        else do
-          payloadLength <- [C.exp| size_t { simpleble_hs_manufacturer_data_length($(void* ptr), $(size_t index)) } |]
-          payload <-
-            copyByteString payloadLength \out ->
-              [C.exp| int { simpleble_hs_manufacturer_data_copy($(void* ptr), $(size_t index), $(uint8_t* out)) } |]
-          pure (ManufacturerData (fromIntegral rawId) payload)
+  withPeripheral peripheral \ptr ->
+    bracket
+      ([C.exp| void* { simpleble_hs_peripheral_manufacturer_data($(void* ptr)) } |] >>= newManufacturerDataPtr)
+      finalizeForeignPtr
+      \manufacturerDataFp ->
+        withForeignPtr manufacturerDataFp \manufacturerDataPtr -> do
+          count <- [C.exp| size_t { simpleble_hs_manufacturer_data_count($(void* manufacturerDataPtr)) } |]
+          forM [0 .. count - 1] (readManufacturerData manufacturerDataPtr)
 
 peripheralWriteRequest :: Peripheral -> Text -> Text -> ByteString -> IO ()
 peripheralWriteRequest peripheral service characteristic payload =
@@ -413,6 +422,18 @@ readCharacteristic characteristicsPtr index = do
   canIndicate <- readBool "canIndicate" [C.exp| int { simpleble_hs_characteristic_can_indicate($(void* characteristicsPtr), $(size_t index)) } |]
   pure Characteristic {..}
 
+readManufacturerData :: Ptr () -> CSize -> IO ManufacturerData
+readManufacturerData manufacturerDataPtr index = do
+  rawId <- [C.exp| int { simpleble_hs_manufacturer_data_id($(void* manufacturerDataPtr), $(size_t index)) } |]
+  if rawId < 0
+    then throwIO (SimpleBLEException "peripheralManufacturerData failed")
+    else do
+      payloadLength <- [C.exp| size_t { simpleble_hs_manufacturer_data_length($(void* manufacturerDataPtr), $(size_t index)) } |]
+      payload <-
+        copyByteString payloadLength \out ->
+          [C.exp| int { simpleble_hs_manufacturer_data_copy($(void* manufacturerDataPtr), $(size_t index), $(uint8_t* out)) } |]
+      pure (ManufacturerData (fromIntegral rawId) payload)
+
 notifyTrampoline :: NotifyCallback
 notifyTrampoline bytes length_ userdata = do
   callback <- deRefStablePtr (castPtrToStablePtr userdata)
@@ -437,6 +458,11 @@ newCharacteristicsPtr :: Ptr () -> IO (ForeignPtr ())
 newCharacteristicsPtr ptr
   | ptr == nullPtr = throwIO (SimpleBLEException "failed to read SimpleBLE characteristics")
   | otherwise = newForeignPtr characteristicsDeleteFinalizer ptr
+
+newManufacturerDataPtr :: Ptr () -> IO (ForeignPtr ())
+newManufacturerDataPtr ptr
+  | ptr == nullPtr = throwIO (SimpleBLEException "failed to read SimpleBLE manufacturer data")
+  | otherwise = newForeignPtr manufacturerDataDeleteFinalizer ptr
 
 withAdapter :: Adapter -> (Ptr () -> IO a) -> IO a
 withAdapter (Adapter fp) = withForeignPtr fp
