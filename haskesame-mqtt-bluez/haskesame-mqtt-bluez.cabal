@@ -1,0 +1,103 @@
+cabal-version: 3.4
+name: haskesame-mqtt-bluez
+version: 0.1.0.0
+description: Please see the README on GitHub at <https://github.com/konn/reactive-home/haskesame-mqtt-bluez#readme>
+homepage: https://github.com/konn/reactive-home#readme
+bug-reports: https://github.com/konn/reactive-home/issues
+author: Hiromi ISHII
+maintainer: konn.jinro_at_gmail.com
+copyright: (c) Hiromi ISHII 2026- present
+license: BSD-3-Clause
+license-file: LICENSE
+build-type: Simple
+tested-with:
+  ghc ==9.12.4
+
+extra-doc-files:
+  CHANGELOG.md
+  README.md
+
+source-repository head
+  type: git
+  location: https://github.com/konn/reactive-home
+  subdir: haskesame-mqtt-bluez
+
+common defaults
+  autogen-modules: Paths_haskesame_mqtt_bluez
+  other-modules: Paths_haskesame_mqtt_bluez
+  ghc-options:
+    -Wall
+    -Wcompat
+    -Widentities
+    -Wincomplete-record-updates
+    -Wincomplete-uni-patterns
+    -Wmissing-export-lists
+    -Wmissing-home-modules
+    -Wpartial-fields
+    -Wredundant-constraints
+    -Wunused-packages
+
+  default-language: GHC2021
+  default-extensions:
+    BlockArguments
+    DeriveAnyClass
+    DerivingStrategies
+    DerivingVia
+    DuplicateRecordFields
+    LambdaCase
+    NoFieldSelectors
+    OverloadedRecordDot
+    OverloadedStrings
+    RecordWildCards
+
+  build-depends: base >=4.7 && <5
+
+library
+  import: defaults
+  hs-source-dirs: src
+  -- cabal-gild: discover src --exclude=src/**/Internal.hs --exclude=src/**/Internal/**/*.hs
+  exposed-modules: Network.Sesame.Mqtt.Bluez.App
+  -- cabal-gild: discover src --include=src/**/Internal.hs --include=src/**/Internal/**/*.hs
+  other-modules:
+  build-depends:
+    bytestring,
+    dbus,
+    filepath,
+    haskesame-core,
+    haskesame-mqtt,
+    haskesame-transport-bluez,
+    hasquitto-core,
+    network,
+    text,
+    tomland,
+    uuid,
+
+executable haskesame-mqtt-bluez
+  import: defaults
+  hs-source-dirs: app
+  main-is: Main.hs
+  -- cabal-gild: discover app --exclude=app/Main.hs
+  other-modules:
+  ghc-options:
+    -threaded
+    -rtsopts
+    -with-rtsopts=-N
+
+  build-depends:
+    haskesame-mqtt-bluez,
+    optparse-applicative,
+
+test-suite haskesame-mqtt-bluez-test
+  import: defaults
+  type: exitcode-stdio-1.0
+  main-is: Test.hs
+  hs-source-dirs: test
+  -- cabal-gild: discover test --exclude=test/Test.hs
+  other-modules:
+  ghc-options:
+    -threaded
+    -O2
+    -rtsopts
+    -with-rtsopts=-N
+
+  build-depends: haskesame-mqtt-bluez
