@@ -23,7 +23,7 @@ import Network.Sesame.Client qualified as Sesame
 import Network.Sesame.Mqtt (BridgeConfig (..), BridgeDevice (..), runBridge)
 import Network.Sesame.Transport (SesameTransport (..))
 import Network.Sesame.Transport.Bluez (BluezConfig (..), connectBluez)
-import Network.Sesame.Types (SecretKey (..))
+import Network.Sesame.Types (Advertisement (..), SecretKey (..))
 import Toml hiding (map)
 
 data AppConfig = AppConfig
@@ -52,11 +52,12 @@ data BridgeTomlConfig = BridgeTomlConfig
   deriving (HasCodec, HasItemCodec) via TomlTable BridgeTomlConfig
 
 data DeviceConfig = DeviceConfig
-  { uuid :: !Text
+  { uuid :: !(Maybe Text)
+  , mac_address :: !(Maybe Text)
   , secret_key :: !Text
-  , device_path :: !Text
-  , write_characteristic_path :: !Text
-  , notify_characteristic_path :: !Text
+  , device_path :: !(Maybe Text)
+  , write_characteristic_path :: !(Maybe Text)
+  , notify_characteristic_path :: !(Maybe Text)
   , manufacturer_data :: !(Maybe Text)
   }
   deriving stock (Show, Eq, Generic)
@@ -101,18 +102,20 @@ connectDevices = traverse connectDevice
 
 connectDevice :: DeviceConfig -> IO RunningDevice
 connectDevice config = do
-  uuid <- maybe (fail ("invalid Sesame UUID: " <> T.unpack config.uuid)) pure (UUID.fromString (T.unpack config.uuid))
   secret <- either fail pure (decodeHexText "secret_key" config.secret_key)
   manufacturer <- either fail pure (traverse (decodeHexText "manufacturer_data") config.manufacturer_data)
   transport <-
     either (fail . show) pure
       =<< connectBluez
         BluezConfig
-          { devicePath = objectPath_ (T.unpack config.device_path)
-          , writeCharacteristicPath = objectPath_ (T.unpack config.write_characteristic_path)
-          , notifyCharacteristicPath = objectPath_ (T.unpack config.notify_characteristic_path)
+          { deviceAddress = T.unpack <$> config.mac_address
+          , devicePath = objectPath_ . T.unpack <$> config.device_path
+          , writeCharacteristicPath = objectPath_ . T.unpack <$> config.write_characteristic_path
+          , notifyCharacteristicPath = objectPath_ . T.unpack <$> config.notify_characteristic_path
           , manufacturerData = manufacturer
+          , discoveryTimeoutSeconds = 5
           }
+  uuid <- deviceUuid config transport
   sesame <- Sesame.newSesame5Client transport
   _ <- Sesame.login sesame (SecretKey secret)
   pure
@@ -123,6 +126,15 @@ connectDevice config = do
 
 cleanupDevices :: [RunningDevice] -> IO ()
 cleanupDevices = mapM_ (.transport.closeBle)
+
+deviceUuid :: DeviceConfig -> SesameTransport -> IO UUID.UUID
+deviceUuid config transport =
+  case config.uuid of
+    Just uuidText -> maybe (fail ("invalid Sesame UUID: " <> T.unpack uuidText)) pure (UUID.fromString (T.unpack uuidText))
+    Nothing ->
+      transport.advertisement >>= \case
+        Right advertisement -> pure advertisement.deviceUuid
+        Left err -> fail ("failed to discover Sesame UUID from advertisement: " <> show err)
 
 decodeHexText :: String -> Text -> Either String ByteString
 decodeHexText fieldName source =

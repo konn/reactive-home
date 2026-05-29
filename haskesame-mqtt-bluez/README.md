@@ -25,13 +25,11 @@ base_topic = "ssm2mqtt"
 history_name = "ssm2mqtt"
 
 [[devices]]
-uuid = "12345678-90ab-cdef-1234-567890abcdef"
+mac_address = "XX:XX:XX:XX:XX:XX"
 secret_key = "1234567890abcdef1234567890abcdef"
-device_path = "/org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX"
-write_characteristic_path = "/org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX/service000c/char000d"
-notify_characteristic_path = "/org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX/service000c/char000f"
-manufacturer_data = "0500011234567890abcdef1234567890abcdef"
 ```
+
+The app can discover the BlueZ device path, Sesame write/notify characteristics, manufacturer advertisement data, and Sesame UUID from `mac_address`. `uuid`, `device_path`, `write_characteristic_path`, `notify_characteristic_path`, and `manufacturer_data` may still be provided to override discovery.
 
 ## Copyright
 
