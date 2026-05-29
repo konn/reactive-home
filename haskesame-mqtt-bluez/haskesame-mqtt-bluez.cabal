@@ -97,5 +97,3 @@ test-suite haskesame-mqtt-bluez-test
     -O2
     -rtsopts
     -with-rtsopts=-N
-
-  build-depends: haskesame-mqtt-bluez

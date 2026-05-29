@@ -74,5 +74,3 @@ test-suite simpleble-hs-test
     -O2
     -rtsopts
     -with-rtsopts=-N
-
-  build-depends: simpleble-hs

@@ -79,5 +79,3 @@ test-suite haskesame-transport-bluez-test
     -O2
     -rtsopts
     -with-rtsopts=-N
-
-  build-depends: haskesame-transport-bluez

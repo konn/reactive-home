@@ -88,5 +88,3 @@ test-suite haskesame-core-test
     -O2
     -rtsopts
     -with-rtsopts=-N
-
-  build-depends: haskesame-core

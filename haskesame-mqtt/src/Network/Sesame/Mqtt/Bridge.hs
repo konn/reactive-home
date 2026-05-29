@@ -23,11 +23,14 @@ import Network.Sesame.Client qualified as Sesame
 import Network.Sesame.Codec (decodeSesame5MechStatus)
 import Network.Sesame.Mqtt.Types
 import Network.Sesame.Types (ItemCode (MechStatus), SesamePublish (..))
+import System.IO (hPutStrLn, stderr)
 
 runBridge :: Mqtt.AutoClient -> BridgeConfig -> [BridgeDevice] -> IO ()
 runBridge mqtt config devices = do
   filter_ <- either (fail . show) pure (commandFilter config)
+  debug config ("subscribing command topic filter: " <> show filter_)
   _ <- Mqtt.subscribe1 mqtt filter_ Mqtt.QoS1
+  debug config ("starting bridge for " <> show (Map.size deviceMap) <> " Sesame device(s)")
   race_
     (consumeCommands mqtt config deviceMap)
     (forConcurrently_ devices (publishDeviceStatus mqtt config))
@@ -38,11 +41,14 @@ publishDeviceStatus :: Mqtt.AutoClient -> BridgeConfig -> BridgeDevice -> IO ()
 publishDeviceStatus mqtt config device =
   forever do
     SesamePublish publishItem payload <- Sesame.readPublish device.sesameClient
+    debug config ("received Sesame publish from " <> UUID.toString device.deviceUuid <> ": " <> show publishItem)
     case publishItem of
       MechStatus ->
         case decodeSesame5MechStatus payload of
-          Left _ -> pure ()
-          Right status -> publishStatus mqtt config device.deviceUuid (statusFromMech status)
+          Left err -> debug config ("failed to decode mech status from " <> UUID.toString device.deviceUuid <> ": " <> show err)
+          Right status -> do
+            debug config ("publishing status for " <> UUID.toString device.deviceUuid)
+            publishStatus mqtt config device.deviceUuid (statusFromMech status)
       _ -> pure ()
 
 consumeCommands :: Mqtt.AutoClient -> BridgeConfig -> Map UUID Sesame.Sesame5Client -> IO ()
@@ -50,18 +56,19 @@ consumeCommands mqtt config devices =
   forever do
     message <- Mqtt.recvMessage mqtt
     case parseCommandMessage config message of
-      Left _ -> pure ()
+      Left err -> debug config ("ignoring MQTT command: " <> show err)
       Right (uuid, command) ->
         case Map.lookup uuid devices of
-          Nothing -> pure ()
+          Nothing -> debug config ("ignoring command for unknown Sesame device: " <> UUID.toString uuid)
           Just sesame -> case command of
-            CommandLock -> Sesame.lock sesame config.historyName
-            CommandUnlock -> Sesame.unlock sesame config.historyName
+            CommandLock -> debug config ("locking " <> UUID.toString uuid) *> Sesame.lock sesame config.historyName
+            CommandUnlock -> debug config ("unlocking " <> UUID.toString uuid) *> Sesame.unlock sesame config.historyName
 
 publishStatus :: Mqtt.AutoClient -> BridgeConfig -> UUID -> StatusPayload -> IO ()
 publishStatus mqtt config uuid status = do
   topic <- either (fail . show) pure (statusTopic config uuid)
   let opts = Mqtt.PublishOptions Mqtt.QoS1 True []
+  debug config ("publishing retained status to " <> show topic)
   _ <- Mqtt.publish mqtt topic (LBS.toStrict (encodeStatusPayload status)) opts
   pure ()
 
@@ -99,3 +106,9 @@ parseCommandPayload payload =
 
 mapTopicError :: Either Mqtt.TopicError a -> Either BridgeError a
 mapTopicError = either (Left . InvalidTopic . T.pack . show) Right
+
+debug :: BridgeConfig -> String -> IO ()
+debug config message =
+  if config.debugLogging
+    then hPutStrLn stderr ("[haskesame-mqtt] " <> message)
+    else pure ()

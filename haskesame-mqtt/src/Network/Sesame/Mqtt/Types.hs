@@ -23,6 +23,7 @@ import Network.Sesame.Types qualified as Sesame
 data BridgeConfig = BridgeConfig
   { baseTopic :: !Text
   , historyName :: !Text
+  , debugLogging :: !Bool
   }
   deriving stock (Show, Eq)
 
@@ -31,6 +32,7 @@ defaultBridgeConfig =
   BridgeConfig
     { baseTopic = "ssm2mqtt"
     , historyName = "ssm2mqtt"
+    , debugLogging = False
     }
 
 data BridgeDevice = BridgeDevice

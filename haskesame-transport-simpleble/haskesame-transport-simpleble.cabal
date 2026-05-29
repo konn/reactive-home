@@ -76,5 +76,3 @@ test-suite haskesame-transport-simpleble-test
     -O2
     -rtsopts
     -with-rtsopts=-N
-
-  build-depends: haskesame-transport-simpleble
