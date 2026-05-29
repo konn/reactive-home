@@ -1,5 +1,6 @@
 module Network.Sesame.Mqtt.Types (
   BridgeConfig (..),
+  ConnectedBridgeDevice (..),
   BridgeDevice (..),
   BridgeError (..),
   LockCommand (..),
@@ -37,7 +38,12 @@ defaultBridgeConfig =
 
 data BridgeDevice = BridgeDevice
   { deviceUuid :: !UUID
-  , sesameClient :: !Sesame5Client
+  , connectSesameClient :: !(IO ConnectedBridgeDevice)
+  }
+
+data ConnectedBridgeDevice = ConnectedBridgeDevice
+  { sesameClient :: !Sesame5Client
+  , disconnectSesameClient :: !(IO ())
   }
 
 data LockCommand = CommandLock | CommandUnlock

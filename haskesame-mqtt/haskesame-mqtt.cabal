@@ -68,9 +68,10 @@ library
     aeson,
     async,
     bytestring,
-    containers,
     haskesame-core,
     hasquitto-auto-reconnect,
+    stm,
+    stm-containers,
     text,
     uuid,
 

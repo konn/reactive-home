@@ -69,10 +69,13 @@ library
   -- cabal-gild: discover src --include=src/**/Internal.hs --include=src/**/Internal/**/*.hs
   other-modules:
   build-depends:
+    async,
     bytestring,
     crypton,
+    list-t,
     memory,
     stm,
+    stm-containers,
     text,
     uuid,
 

@@ -8,7 +8,6 @@ module Network.Sesame.Mqtt.SimpleBLE.App (
   runApp,
 ) where
 
-import Control.Exception (bracket)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.Char (digitToInt, isHexDigit)
@@ -19,7 +18,7 @@ import Data.UUID qualified as UUID
 import GHC.Generics (Generic)
 import Network.Mqtt.Client.AutoReconnect qualified as Mqtt
 import Network.Sesame.Client qualified as Sesame
-import Network.Sesame.Mqtt (BridgeConfig (..), BridgeDevice (..), runBridge)
+import Network.Sesame.Mqtt (BridgeConfig (..), BridgeDevice (..), ConnectedBridgeDevice (..), runBridge)
 import Network.Sesame.Transport (SesameTransport (..))
 import Network.Sesame.Transport.SimpleBLE (SimpleBLEConfig (..), connectSimpleBLE, defaultSimpleBLEConfig)
 import Network.Sesame.Types (Advertisement (..), SecretKey (..))
@@ -59,6 +58,7 @@ data DeviceConfig = DeviceConfig
   , write_characteristic_uuid :: !(Maybe Text)
   , notify_characteristic_uuid :: !(Maybe Text)
   , scan_timeout_ms :: !(Maybe Int)
+  , command_timeout_ms :: !(Maybe Int)
   }
   deriving stock (Show, Eq, Generic)
   deriving (HasCodec, HasItemCodec) via TomlTable DeviceConfig
@@ -69,8 +69,7 @@ configCodec = genericCodec
 runApp :: AppConfig -> IO ()
 runApp config =
   Mqtt.withClient (mqttOptions config.mqtt) Mqtt.defaultAutoReconnectConfig \mqtt _ ->
-    bracket (connectDevices config.devices) cleanupDevices \devices ->
-      runBridge mqtt (bridgeConfig config.bridge) (map (.bridgeDevice) devices)
+    prepareDevices config.devices >>= runBridge mqtt (bridgeConfig config.bridge)
 
 loadConfig :: FilePath -> IO AppConfig
 loadConfig configFile =
@@ -93,15 +92,37 @@ bridgeConfig config =
     , debugLogging = maybe False id config.debug_logging
     }
 
-data RunningDevice = RunningDevice
-  { bridgeDevice :: !BridgeDevice
-  , transport :: !SesameTransport
+prepareDevices :: [DeviceConfig] -> IO [BridgeDevice]
+prepareDevices = traverse prepareDevice
+
+prepareDevice :: DeviceConfig -> IO BridgeDevice
+prepareDevice config = do
+  configuredUuid <- traverse parseUuid config.uuid
+  uuid <- case configuredUuid of
+    Just uuid -> pure uuid
+    Nothing -> do
+      connected <- connectDevice config
+      discoveredUuid <- deviceUuid Nothing connected.sesameTransport
+      connected.sesameTransport.closeBle
+      pure discoveredUuid
+  pure
+    BridgeDevice
+      { deviceUuid = uuid
+      , connectSesameClient = do
+          next <- connectDevice config
+          pure
+            ConnectedBridgeDevice
+              { sesameClient = next.sesameClient
+              , disconnectSesameClient = next.sesameTransport.closeBle
+              }
+      }
+
+data ConnectedSesameDevice = ConnectedSesameDevice
+  { sesameClient :: !Sesame.Sesame5Client
+  , sesameTransport :: !SesameTransport
   }
 
-connectDevices :: [DeviceConfig] -> IO [RunningDevice]
-connectDevices = traverse connectDevice
-
-connectDevice :: DeviceConfig -> IO RunningDevice
+connectDevice :: DeviceConfig -> IO ConnectedSesameDevice
 connectDevice config = do
   secret <- either fail pure (decodeHexText "secret_key" config.secret_key)
   configuredUuid <- traverse parseUuid config.uuid
@@ -112,17 +133,13 @@ connectDevice config = do
     either (fail . show) pure
       =<< connectSimpleBLE
         (simpleBLEConfig configuredUuid config)
-  uuid <- deviceUuid configuredUuid transport
-  sesame <- Sesame.newSesame5Client transport
+  sesame <- Sesame.newSesame5ClientWith (sesameClientConfig config) transport
   _ <- Sesame.login sesame (SecretKey secret)
   pure
-    RunningDevice
-      { bridgeDevice = BridgeDevice uuid sesame
-      , transport = transport
+    ConnectedSesameDevice
+      { sesameClient = sesame
+      , sesameTransport = transport
       }
-
-cleanupDevices :: [RunningDevice] -> IO ()
-cleanupDevices = mapM_ (.transport.closeBle)
 
 simpleBLEConfig :: Maybe UUID.UUID -> DeviceConfig -> SimpleBLEConfig
 simpleBLEConfig uuid config =
@@ -148,6 +165,12 @@ deviceUuid configuredUuid transport =
 parseUuid :: Text -> IO UUID.UUID
 parseUuid uuidText =
   maybe (fail ("invalid Sesame UUID: " <> T.unpack uuidText)) pure (UUID.fromString (T.unpack uuidText))
+
+sesameClientConfig :: DeviceConfig -> Sesame.Sesame5ClientConfig
+sesameClientConfig config =
+  Sesame.defaultSesame5ClientConfig
+    { Sesame.commandTimeoutMicros = maybe Sesame.defaultSesame5ClientConfig.commandTimeoutMicros (* 1000) config.command_timeout_ms
+    }
 
 decodeHexText :: String -> Text -> Either String ByteString
 decodeHexText fieldName source =

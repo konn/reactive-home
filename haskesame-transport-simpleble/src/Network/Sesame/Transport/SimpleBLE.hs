@@ -8,6 +8,7 @@ module Network.Sesame.Transport.SimpleBLE (
 ) where
 
 import Control.Applicative ((<|>))
+import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, try)
 import Control.Monad (filterM)
@@ -72,12 +73,16 @@ connectSimpleBLE config = do
     advertisementData <- (discovered.advertisementData <|>) <$> peripheralAdvertisementData peripheral
     queue <- newTQueueIO
     state <- newTVarIO emptyReassembly
+    closed <- newTVarIO False
     subscription <- SimpleBLE.peripheralNotify peripheral config.serviceUuid notifyCharacteristic (handleNotify queue state)
+    monitor <- forkIO (monitorConnection peripheral closed queue)
     pure
       SesameTransport
         { sendBle = \encrypted bytes -> sendFragments peripheral config.serviceUuid writeCharacteristic encrypted bytes
         , receiveBle = atomically (readTQueue queue)
         , closeBle = do
+            atomically (writeTVar closed True)
+            killThread monitor
             _ <- try @SomeException (SimpleBLE.subscriptionUnsubscribe subscription)
             _ <- try @SomeException (SimpleBLE.peripheralDisconnect peripheral)
             pure ()
@@ -203,6 +208,20 @@ handleNotify queue state bytes =
       Left err -> writeTQueue queue (Left (TransportCallFailed (show err)))
       Right (next, Nothing) -> writeTVar state next
       Right (next, Just complete) -> writeTVar state next *> writeTQueue queue (Right complete)
+
+monitorConnection :: SimpleBLE.Peripheral -> TVar Bool -> TQueue (Either SesameTransportError (ByteString, Bool)) -> IO ()
+monitorConnection peripheral closed queue = go
+  where
+    go = do
+      threadDelay 1000000
+      isClosed <- readTVarIO closed
+      if isClosed
+        then pure ()
+        else do
+          connected <- either (const False) id <$> try @SomeException (SimpleBLE.peripheralIsConnected peripheral)
+          if connected
+            then go
+            else atomically (writeTQueue queue (Left TransportClosed))
 
 sendFragments :: SimpleBLE.Peripheral -> Text -> Text -> Bool -> ByteString -> IO (Either SesameTransportError ())
 sendFragments peripheral service characteristic encrypted bytes = do

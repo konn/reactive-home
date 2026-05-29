@@ -54,6 +54,7 @@ connectBluez config = do
     writeChar <- requireField "writeCharacteristicPath" resolved.writeCharacteristicPath
     notifyChar <- requireField "notifyCharacteristicPath" resolved.notifyCharacteristicPath
     _ <- DBus.addMatch client (propertiesChangedRule notifyChar) (handleSignal queue state)
+    _ <- DBus.addMatch client (propertiesChangedRule device) (handleDeviceSignal queue)
     callNoBody client device "org.bluez.Device1" "Connect"
     callNoBody client notifyChar "org.bluez.GattCharacteristic1" "StartNotify"
     pure
@@ -249,6 +250,19 @@ handleSignal queue state signalMessage =
               Left err -> writeTQueue queue (Left (TransportCallFailed (show err)))
               Right (next, Nothing) -> writeTVar state next
               Right (next, Just complete) -> writeTVar state next *> writeTQueue queue (Right complete)
+    _ -> pure ()
+
+handleDeviceSignal :: TQueue (Either SesameTransportError (ByteString, Bool)) -> Signal -> IO ()
+handleDeviceSignal queue signalMessage =
+  case signalBody signalMessage of
+    [ifaceVar, changedVar, _invalidatedVar]
+      | Just (iface :: String) <- fromVariant ifaceVar
+      , iface == "org.bluez.Device1"
+      , Just (changed :: Map String Variant) <- fromVariant changedVar
+      , Just connectedVar <- Map.lookup "Connected" changed
+      , Just (connected :: Bool) <- fromVariant connectedVar
+      , not connected ->
+          atomically (writeTQueue queue (Left TransportClosed))
     _ -> pure ()
 
 sendFragments :: DBus.Client -> ObjectPath -> Bool -> ByteString -> IO (Either SesameTransportError ())
