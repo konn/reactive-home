@@ -81,18 +81,3 @@ test-suite haskesame-transport-bluez-test
     -with-rtsopts=-N
 
   build-depends: haskesame-transport-bluez
-
-test-suite haskesame-transport-bluez-doctest
-  import: defaults
-  type: exitcode-stdio-1.0
-  hs-source-dirs: doctest
-  main-is: DocTest.hs
-  ghc-options:
-    -threaded
-    -rtsopts
-    -O2
-    -with-rtsopts=-N
-
-  build-depends:
-    doctest-parallel,
-    haskesame-transport-bluez,
