@@ -70,7 +70,7 @@ configCodec = genericCodec
 runApp :: AppConfig -> IO ()
 runApp config =
   Mqtt.withClient (mqttOptions config.mqtt) Mqtt.defaultAutoReconnectConfig \mqtt _ ->
-    prepareDevices config.devices >>= runBridge mqtt (bridgeConfig config.bridge)
+    prepareDevices (bridgeDebugLogging config.bridge) config.devices >>= runBridge mqtt (bridgeConfig config.bridge)
 
 loadConfig :: FilePath -> IO AppConfig
 loadConfig configFile =
@@ -90,18 +90,21 @@ bridgeConfig config =
   BridgeConfig
     { baseTopic = config.base_topic
     , historyName = config.history_name
-    , debugLogging = maybe False id config.debug_logging
+    , debugLogging = bridgeDebugLogging config
     }
 
-prepareDevices :: [DeviceConfig] -> IO [BridgeDevice]
-prepareDevices = traverse prepareDevice
+bridgeDebugLogging :: BridgeTomlConfig -> Bool
+bridgeDebugLogging config = maybe False id config.debug_logging
 
-prepareDevice :: DeviceConfig -> IO BridgeDevice
-prepareDevice config = do
+prepareDevices :: Bool -> [DeviceConfig] -> IO [BridgeDevice]
+prepareDevices debugLogging = traverse (prepareDevice debugLogging)
+
+prepareDevice :: Bool -> DeviceConfig -> IO BridgeDevice
+prepareDevice debugLogging config = do
   uuid <- case config.uuid of
     Just uuidText -> maybe (fail ("invalid Sesame UUID: " <> T.unpack uuidText)) pure (UUID.fromString (T.unpack uuidText))
     Nothing -> do
-      connected <- connectDevice config
+      connected <- connectDevice debugLogging config
       discoveredUuid <- deviceUuid config connected.sesameTransport
       connected.sesameTransport.closeBle
       pure discoveredUuid
@@ -109,7 +112,7 @@ prepareDevice config = do
     BridgeDevice
       { deviceUuid = uuid
       , connectSesameClient = do
-          next <- connectDevice config
+          next <- connectDevice debugLogging config
           pure
             ConnectedBridgeDevice
               { sesameClient = next.sesameClient
@@ -122,8 +125,8 @@ data ConnectedSesameDevice = ConnectedSesameDevice
   , sesameTransport :: !SesameTransport
   }
 
-connectDevice :: DeviceConfig -> IO ConnectedSesameDevice
-connectDevice config = do
+connectDevice :: Bool -> DeviceConfig -> IO ConnectedSesameDevice
+connectDevice debugLogging config = do
   secret <- either fail pure (decodeHexText "secret_key" config.secret_key)
   manufacturer <- either fail pure (traverse (decodeHexText "manufacturer_data") config.manufacturer_data)
   transport <-
@@ -136,6 +139,7 @@ connectDevice config = do
           , notifyCharacteristicPath = objectPath_ . T.unpack <$> config.notify_characteristic_path
           , manufacturerData = manufacturer
           , discoveryTimeoutSeconds = 5
+          , debugLogging = debugLogging
           }
   sesame <- Sesame.newSesame5ClientWith (sesameClientConfig config) transport
   _ <- Sesame.login sesame (SecretKey secret)
