@@ -1,7 +1,7 @@
 module Main (main) where
 
 import Control.Applicative ((<**>))
-import Network.Sesame.Mqtt.Bluez.App (runApp)
+import Network.Sesame.Mqtt.Bluez.App (loadConfig, runApp)
 import Options.Applicative qualified as Opts
 
 newtype CLIOpts = CLIOpts {configDir :: FilePath}
@@ -27,4 +27,4 @@ cliOptsP =
 main :: IO ()
 main = do
   CLIOpts {configDir} <- Opts.execParser cliOptsP
-  runApp configDir
+  loadConfig configDir >>= runApp

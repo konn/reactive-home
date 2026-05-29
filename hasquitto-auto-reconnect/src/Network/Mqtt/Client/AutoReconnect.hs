@@ -47,6 +47,15 @@ module Network.Mqtt.Client.AutoReconnect (
   defaultBackoffConfig,
   AutoReconnectConfig (..),
   defaultAutoReconnectConfig,
+  ConnectOptions (..),
+  defaultConnectOptions,
+  PublishOptions (..),
+  defaultPublishOptions,
+  PublishResult (..),
+  Session (..),
+  Message (..),
+  module Network.Mqtt.Types,
+  module Network.Mqtt.Connection.TCP,
 
   -- * Handle & status
   AutoClient,
@@ -77,3 +86,5 @@ module Network.Mqtt.Client.AutoReconnect (
 ) where
 
 import Network.Mqtt.Client.AutoReconnect.Internal
+import Network.Mqtt.Connection.TCP
+import Network.Mqtt.Types

@@ -70,7 +70,7 @@ library
     bytestring,
     containers,
     haskesame-core,
-    hasquitto-core,
+    hasquitto-auto-reconnect,
     text,
     uuid,
 

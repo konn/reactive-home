@@ -17,6 +17,13 @@ module Network.Mqtt.Client.AutoReconnect.Internal (
   defaultBackoffConfig,
   AutoReconnectConfig (..),
   defaultAutoReconnectConfig,
+  ConnectOptions (..),
+  defaultConnectOptions,
+  PublishOptions (..),
+  defaultPublishOptions,
+  PublishResult (..),
+  Session (..),
+  Message (..),
 
   -- * Handle & status
   AutoClient,
@@ -64,10 +71,10 @@ import Data.List.NonEmpty qualified as NE
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
-import Network.Mqtt.Client (Client, ConnectOptions, PublishOptions, PublishResult, Session (..))
+import Network.Mqtt.Client (Client, ConnectOptions (..), PublishOptions (..), PublishResult (..), Session (..), defaultConnectOptions, defaultPublishOptions)
 import Network.Mqtt.Client qualified as Mqtt
 import Network.Mqtt.Exception (ConnectionError (..), MqttException (..))
-import Network.Mqtt.Message (Message)
+import Network.Mqtt.Message (Message (..))
 import Network.Mqtt.Types (
   Properties,
   QoS,

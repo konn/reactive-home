@@ -18,25 +18,23 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.UUID (UUID)
 import Data.UUID qualified as UUID
-import Network.Mqtt.Client qualified as Mqtt
-import Network.Mqtt.Message (Message (..))
-import Network.Mqtt.Types
+import Network.Mqtt.Client.AutoReconnect qualified as Mqtt
 import Network.Sesame.Client qualified as Sesame
 import Network.Sesame.Codec (decodeSesame5MechStatus)
 import Network.Sesame.Mqtt.Types
 import Network.Sesame.Types (ItemCode (MechStatus), SesamePublish (..))
 
-runBridge :: Mqtt.Client -> BridgeConfig -> [BridgeDevice] -> IO ()
+runBridge :: Mqtt.AutoClient -> BridgeConfig -> [BridgeDevice] -> IO ()
 runBridge mqtt config devices = do
   filter_ <- either (fail . show) pure (commandFilter config)
-  _ <- Mqtt.subscribe1 mqtt filter_ QoS1
+  _ <- Mqtt.subscribe1 mqtt filter_ Mqtt.QoS1
   race_
     (consumeCommands mqtt config deviceMap)
     (forConcurrently_ devices (publishDeviceStatus mqtt config))
   where
     deviceMap = Map.fromList [(device.deviceUuid, device.sesameClient) | device <- devices]
 
-publishDeviceStatus :: Mqtt.Client -> BridgeConfig -> BridgeDevice -> IO ()
+publishDeviceStatus :: Mqtt.AutoClient -> BridgeConfig -> BridgeDevice -> IO ()
 publishDeviceStatus mqtt config device =
   forever do
     SesamePublish publishItem payload <- Sesame.readPublish device.sesameClient
@@ -47,7 +45,7 @@ publishDeviceStatus mqtt config device =
           Right status -> publishStatus mqtt config device.deviceUuid (statusFromMech status)
       _ -> pure ()
 
-consumeCommands :: Mqtt.Client -> BridgeConfig -> Map UUID Sesame.Sesame5Client -> IO ()
+consumeCommands :: Mqtt.AutoClient -> BridgeConfig -> Map UUID Sesame.Sesame5Client -> IO ()
 consumeCommands mqtt config devices =
   forever do
     message <- Mqtt.recvMessage mqtt
@@ -60,31 +58,31 @@ consumeCommands mqtt config devices =
             CommandLock -> Sesame.lock sesame config.historyName
             CommandUnlock -> Sesame.unlock sesame config.historyName
 
-publishStatus :: Mqtt.Client -> BridgeConfig -> UUID -> StatusPayload -> IO ()
+publishStatus :: Mqtt.AutoClient -> BridgeConfig -> UUID -> StatusPayload -> IO ()
 publishStatus mqtt config uuid status = do
   topic <- either (fail . show) pure (statusTopic config uuid)
-  let opts = Mqtt.PublishOptions QoS1 True []
+  let opts = Mqtt.PublishOptions Mqtt.QoS1 True []
   _ <- Mqtt.publish mqtt topic (LBS.toStrict (encodeStatusPayload status)) opts
   pure ()
 
-commandFilter :: BridgeConfig -> Either BridgeError TopicFilter
+commandFilter :: BridgeConfig -> Either BridgeError Mqtt.TopicFilter
 commandFilter config
   | "/" `T.isInfixOf` config.baseTopic = Left (InvalidBaseTopic config.baseTopic)
-  | otherwise = mapTopicError (mkTopicFilter (config.baseTopic <> "/+/set"))
+  | otherwise = mapTopicError (Mqtt.mkTopicFilter (config.baseTopic <> "/+/set"))
 
-statusTopic :: BridgeConfig -> UUID -> Either BridgeError Topic
+statusTopic :: BridgeConfig -> UUID -> Either BridgeError Mqtt.Topic
 statusTopic config uuid
   | "/" `T.isInfixOf` config.baseTopic = Left (InvalidBaseTopic config.baseTopic)
-  | otherwise = mapTopicError (mkTopic (config.baseTopic <> "/" <> T.pack (UUID.toString uuid) <> "/get"))
+  | otherwise = mapTopicError (Mqtt.mkTopic (config.baseTopic <> "/" <> T.pack (UUID.toString uuid) <> "/get"))
 
-parseCommandMessage :: BridgeConfig -> Message -> Either BridgeError (UUID, LockCommand)
+parseCommandMessage :: BridgeConfig -> Mqtt.Message -> Either BridgeError (UUID, LockCommand)
 parseCommandMessage config message =
   (,)
     <$> parseCommandTopic config message.topic
     <*> parseCommandPayload message.payload
 
-parseCommandTopic :: BridgeConfig -> Topic -> Either BridgeError UUID
-parseCommandTopic config (Topic topicText) =
+parseCommandTopic :: BridgeConfig -> Mqtt.Topic -> Either BridgeError UUID
+parseCommandTopic config (Mqtt.Topic topicText) =
   case T.splitOn "/" topicText of
     [base, uuidText, "set"]
       | base == config.baseTopic ->
@@ -99,5 +97,5 @@ parseCommandPayload payload =
     Right "UNLOCKED" -> Right CommandUnlock
     Right other -> Left (InvalidCommandPayload other)
 
-mapTopicError :: Either TopicError a -> Either BridgeError a
+mapTopicError :: Either Mqtt.TopicError a -> Either BridgeError a
 mapTopicError = either (Left . InvalidTopic . T.pack . show) Right

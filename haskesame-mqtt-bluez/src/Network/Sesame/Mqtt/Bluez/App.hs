@@ -5,6 +5,7 @@ module Network.Sesame.Mqtt.Bluez.App (
   DeviceConfig (..),
   configCodec,
   configFileIn,
+  loadConfig,
   runApp,
 ) where
 
@@ -18,14 +19,12 @@ import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.UUID qualified as UUID
 import GHC.Generics (Generic)
-import Network.Mqtt.Client qualified as Mqtt
-import Network.Mqtt.Connection.TCP (clientSettings, tcpConnection)
+import Network.Mqtt.Client.AutoReconnect qualified as Mqtt
 import Network.Sesame.Client qualified as Sesame
 import Network.Sesame.Mqtt (BridgeConfig (..), BridgeDevice (..), runBridge)
 import Network.Sesame.Transport (SesameTransport (..))
 import Network.Sesame.Transport.Bluez (BluezConfig (..), connectBluez)
 import Network.Sesame.Types (SecretKey (..))
-import Network.Socket (PortNumber)
 import System.FilePath ((</>))
 import Toml hiding (map)
 
@@ -71,20 +70,23 @@ configCodec = genericCodec
 configFileIn :: FilePath -> FilePath
 configFileIn dir = dir </> "config.toml"
 
-runApp :: FilePath -> IO ()
-runApp configDir = do
-  config <- either (fail . show) pure =<< decodeFileExact configCodec (configFileIn configDir)
-  Mqtt.withClient (mqttOptions config.mqtt) \mqtt _ ->
+runApp :: AppConfig -> IO ()
+runApp config =
+  Mqtt.withClient (mqttOptions config.mqtt) Mqtt.defaultAutoReconnectConfig \mqtt _ ->
     bracket (connectDevices config.devices) cleanupDevices \devices ->
       runBridge mqtt (bridgeConfig config.bridge) (map (.bridgeDevice) devices)
 
+loadConfig :: FilePath -> IO AppConfig
+loadConfig configDir =
+  either (fail . show) pure =<< decodeFileExact configCodec (configFileIn configDir)
+
 mqttOptions :: MqttConfig -> Mqtt.ConnectOptions
 mqttOptions config =
-  (Mqtt.defaultConnectOptions (tcpConnection (clientSettings (T.unpack config.host) (fromIntegral @Int @PortNumber config.port))) clientId)
-    { Mqtt.username = config.user
-    , Mqtt.password = TE.encodeUtf8 <$> config.password
-    }
+  case Mqtt.defaultConnectOptions connection clientId of
+    Mqtt.ConnectOptions factory cid clean keepAlive _ _ will properties authenticator topicAliases queueBound overflow ->
+      Mqtt.ConnectOptions factory cid clean keepAlive config.user (TE.encodeUtf8 <$> config.password) will properties authenticator topicAliases queueBound overflow
   where
+    connection = Mqtt.tcpConnection (Mqtt.clientSettings (T.unpack config.host) (fromIntegral config.port))
     clientId = maybe "haskesame-mqtt-bluez" id config.client_id
 
 bridgeConfig :: BridgeTomlConfig -> BridgeConfig
