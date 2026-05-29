@@ -60,6 +60,7 @@ library
   build-depends:
     bytestring,
     haskesame-core,
+    safe-exceptions,
     simpleble-hs,
     stm,
     text,

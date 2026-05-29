@@ -47,7 +47,7 @@ import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async, AsyncCancelled, async, cancel)
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Concurrent.STM
-import Control.Exception (Handler (..), SomeException, bracket, bracket_, catch, catches, finally, mask, onException, throwIO)
+import Control.Exception.Safe (Handler (..), SomeException, bracket, bracket_, catch, catches, finally, mask, onException, throwIO)
 import Control.Monad (forever, unless, void, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS

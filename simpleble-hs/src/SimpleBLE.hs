@@ -29,7 +29,7 @@ module SimpleBLE (
   subscriptionUnsubscribe,
 ) where
 
-import Control.Exception (Exception, bracket, throwIO)
+import Control.Exception.Safe (Exception, bracket, throwIO)
 import Control.Monad (forM)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS

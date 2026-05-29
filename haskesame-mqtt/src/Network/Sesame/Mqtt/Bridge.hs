@@ -11,7 +11,7 @@ module Network.Sesame.Mqtt.Bridge (
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (forConcurrently_, race_)
 import Control.Concurrent.STM (atomically)
-import Control.Exception (SomeException, try)
+import Control.Exception.Safe qualified as Exception
 import Control.Monad (forever)
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LBS
@@ -46,17 +46,22 @@ superviseDevice :: Mqtt.AutoClient -> BridgeConfig -> DeviceMap -> BridgeDevice 
 superviseDevice mqtt config deviceMap device =
   forever do
     debug config ("connecting Sesame device " <> UUID.toString device.deviceUuid)
-    connectedResult <- try device.connectSesameClient
+    connectedResult <- Exception.tryAny device.connectSesameClient
     case connectedResult of
       Left err -> do
-        debug config ("Sesame connection failed for " <> UUID.toString device.deviceUuid <> ": " <> show (err :: SomeException))
+        debug config ("Sesame connection failed for " <> UUID.toString device.deviceUuid <> ": " <> show err)
         threadDelay reconnectDelayMicros
       Right connected -> do
         debug config ("Sesame connected " <> UUID.toString device.deviceUuid)
         atomically (STMMap.insert (Just connected) (deviceKey device.deviceUuid) deviceMap)
-        publishResult <- try @SomeException (publishDeviceStatus mqtt config device.deviceUuid connected.sesameClient)
-        atomically (STMMap.insert Nothing (deviceKey device.deviceUuid) deviceMap)
-        _ <- try @SomeException connected.disconnectSesameClient
+        publishResult <-
+          Exception.tryAny
+            ( publishDeviceStatus mqtt config device.deviceUuid connected.sesameClient
+                `Exception.finally` do
+                  atomically (STMMap.insert Nothing (deviceKey device.deviceUuid) deviceMap)
+                  _ <- Exception.tryAny connected.disconnectSesameClient
+                  pure ()
+            )
         debug config ("Sesame disconnected " <> UUID.toString device.deviceUuid <> ": " <> either show (const "status loop ended") publishResult)
         threadDelay reconnectDelayMicros
 
@@ -85,15 +90,15 @@ consumeCommands mqtt config devices =
           Nothing -> debug config ("ignoring command for unknown Sesame device: " <> UUID.toString uuid)
           Just Nothing -> debug config ("ignoring command while Sesame device is disconnected: " <> UUID.toString uuid)
           Just (Just connected) -> do
-            result <- try case command of
+            result <- Exception.tryAny case command of
               CommandLock -> debug config ("locking " <> UUID.toString uuid) *> Sesame.lock connected.sesameClient config.historyName
               CommandUnlock -> debug config ("unlocking " <> UUID.toString uuid) *> Sesame.unlock connected.sesameClient config.historyName
             case result of
               Right () -> pure ()
               Left err -> do
-                debug config ("command failed for " <> UUID.toString uuid <> ": " <> show (err :: SomeException))
+                debug config ("command failed for " <> UUID.toString uuid <> ": " <> show err)
                 atomically (STMMap.insert Nothing (deviceKey uuid) devices)
-                _ <- try @SomeException connected.disconnectSesameClient
+                _ <- Exception.tryAny connected.disconnectSesameClient
                 pure ()
 
 publishStatus :: Mqtt.AutoClient -> BridgeConfig -> UUID -> StatusPayload -> IO ()

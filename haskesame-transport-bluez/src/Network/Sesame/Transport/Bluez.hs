@@ -8,7 +8,7 @@ import Control.Applicative ((<|>))
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, bracket_, try)
+import Control.Exception.Safe qualified as Exception
 import DBus
 import DBus.Client qualified as DBus
 import Data.ByteString (ByteString)
@@ -50,7 +50,7 @@ defaultBluezConfig device writeChar notifyChar =
 
 connectBluez :: BluezConfig -> IO (Either SesameTransportError SesameTransport)
 connectBluez config = do
-  result <- try do
+  result <- Exception.tryAny do
     debug config "connecting to system D-Bus"
     client <- DBus.connectSystem
     resolved <- resolveBluezConfig client config
@@ -71,12 +71,12 @@ connectBluez config = do
         , receiveBle = atomically (readTQueue queue)
         , closeBle = do
             debug config "closing BlueZ transport"
-            _ <- try @SomeException (callNoBody client notifyChar "org.bluez.GattCharacteristic1" "StopNotify")
-            _ <- try @SomeException (callNoBody client device "org.bluez.Device1" "Disconnect")
+            _ <- Exception.tryAny (callNoBody client notifyChar "org.bluez.GattCharacteristic1" "StopNotify")
+            _ <- Exception.tryAny (callNoBody client device "org.bluez.Device1" "Disconnect")
             DBus.disconnect client
         , advertisement = pure (maybe (Left AdvertisementUnavailable) (either (Left . TransportCallFailed . show) Right . decodeAdvertisement) resolved.manufacturerData)
         }
-  pure (either (Left . TransportCallFailed . show @SomeException) Right result)
+  pure (either (Left . TransportCallFailed . show) Right result)
 
 type BluezProperties = Map String Variant
 
@@ -122,7 +122,7 @@ discoverDevice :: DBus.Client -> Int -> String -> IO (ManagedObjects, ObjectPath
 discoverDevice client timeoutSeconds macAddress = do
   objects <- getManagedObjects client
   adapter <- maybe (fail "BlueZ adapter not found") pure (findAdapter objects)
-  bracket_
+  Exception.bracket_
     (callNoBody client adapter "org.bluez.Adapter1" "StartDiscovery")
     (ignoreErrors (callNoBody client adapter "org.bluez.Adapter1" "StopDiscovery"))
     ( poll timeoutSeconds do
@@ -256,7 +256,7 @@ requireField name = maybe (fail ("missing BlueZ " <> name)) pure
 
 ignoreErrors :: IO () -> IO ()
 ignoreErrors action = do
-  _ <- try @SomeException action
+  _ <- Exception.tryAny action
   pure ()
 
 propertiesChangedRule :: ObjectPath -> DBus.MatchRule
@@ -311,7 +311,7 @@ sendFragments :: BluezConfig -> DBus.Client -> ObjectPath -> Bool -> ByteString 
 sendFragments config client path encrypted bytes = do
   let packets = fragment encrypted bytes
   debug config ("writing BLE message: payload_bytes=" <> show (BS.length bytes) <> ", encrypted=" <> show encrypted <> ", fragments=" <> show (length packets))
-  result <- try @SomeException do
+  result <- Exception.tryAny do
     mapM_ (writePacket client path) packets
   pure (either (Left . TransportCallFailed . show) (const (Right ())) result)
 

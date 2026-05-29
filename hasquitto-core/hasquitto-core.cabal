@@ -86,6 +86,7 @@ library
     containers,
     list-t,
     network,
+    safe-exceptions,
     stm,
     stm-containers,
     text,

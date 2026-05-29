@@ -74,6 +74,7 @@ library
     crypton,
     list-t,
     memory,
+    safe-exceptions,
     stm,
     stm-containers,
     text,

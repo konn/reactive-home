@@ -70,6 +70,7 @@ library
     bytestring,
     haskesame-core,
     hasquitto-auto-reconnect,
+    safe-exceptions,
     stm,
     stm-containers,
     text,

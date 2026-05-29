@@ -15,7 +15,7 @@ module Network.Sesame.Client (
 
 import Control.Concurrent.Async (async, link)
 import Control.Concurrent.STM (TQueue, TVar, atomically, check, newTQueueIO, newTVarIO, orElse, readTQueue, readTVar, registerDelay, writeTQueue, writeTVar)
-import Control.Exception (SomeException, throwIO, try)
+import Control.Exception.Safe qualified as Exception
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.Int (Int16)
@@ -65,17 +65,17 @@ newSesame5ClientWith config transport = do
 login :: Sesame5Client -> SecretKey -> IO Int
 login client secret = do
   token <- waitInitial client
-  sessionKey <- either (throwIO . SesameCryptoException) pure (Crypto.deriveSessionKey secret token)
+  sessionKey <- either (Exception.throwIO . SesameCryptoException) pure (Crypto.deriveSessionKey secret token)
   cipher <- Crypto.newSesameCipher token sessionKey
   atomically (writeTVar client.cipherVar (Just cipher))
   queue <- registerResponseWaiter client Login
-  sent <- try (either (throwIO . SesameTransportException) pure =<< client.transport.sendBle False (encodeCommand (SesameCommand Login (BS.take 4 sessionKey.unSessionKey))))
+  sent <- Exception.tryAny (either (Exception.throwIO . SesameTransportException) pure =<< client.transport.sendBle False (encodeCommand (SesameCommand Login (BS.take 4 sessionKey.unSessionKey))))
   response <- case sent of
-    Left err -> unregisterResponseWaiter client Login *> atomically (writeTVar client.cipherVar Nothing) *> throwIO (err :: SomeException)
+    Left err -> unregisterResponseWaiter client Login *> atomically (writeTVar client.cipherVar Nothing) *> Exception.throwIO err
     Right () -> waitRegisteredResponse client Login queue client.config.commandTimeoutMicros
   case response.resultCode of
     Success -> pure (timestampLE response.responsePayload)
-    rc -> atomically (writeTVar client.cipherVar Nothing) *> throwIO (SesameProtocolException (OperationFailed Login rc))
+    rc -> atomically (writeTVar client.cipherVar Nothing) *> Exception.throwIO (SesameProtocolException (OperationFailed Login rc))
 
 lock :: Sesame5Client -> Text -> IO ()
 lock client name = sendEncrypted client (SesameCommand Lock (createHistoryTag name).unHistoryTag)
@@ -96,15 +96,15 @@ setAutoLockDuration client seconds =
 
 readPublish :: Sesame5Client -> IO SesamePublish
 readPublish client = do
-  readTQueueOrTimeout client.publishQueue Nothing >>= either throwIO pure
+  readTQueueOrTimeout client.publishQueue Nothing >>= either Exception.throwIO pure
 
 sendEncrypted :: Sesame5Client -> SesameCommand -> IO ()
 sendEncrypted client command = do
-  cipher <- atomically (readTVar client.cipherVar) >>= maybe (throwIO (SesameCryptoException AuthenticationFailed)) pure
+  cipher <- atomically (readTVar client.cipherVar) >>= maybe (Exception.throwIO (SesameCryptoException AuthenticationFailed)) pure
   response <- sendCommand client (Just cipher) command
   case response.resultCode of
     Success -> pure ()
-    rc -> throwIO (SesameProtocolException (OperationFailed command.itemCode rc))
+    rc -> Exception.throwIO (SesameProtocolException (OperationFailed command.itemCode rc))
 
 sendCommand :: Sesame5Client -> Maybe Crypto.SesameCipher -> SesameCommand -> IO SesameResponse
 sendCommand client maybeCipher command = do
@@ -112,18 +112,18 @@ sendCommand client maybeCipher command = do
   let plaintext = encodeCommand command
   (encrypted, outgoing) <- case maybeCipher of
     Nothing -> pure (False, plaintext)
-    Just cipher -> (True,) <$> (Crypto.encrypt cipher plaintext >>= either (throwIO . SesameCryptoException) pure)
-  sent <- try (either (throwIO . SesameTransportException) pure =<< client.transport.sendBle encrypted outgoing)
+    Just cipher -> (True,) <$> (Crypto.encrypt cipher plaintext >>= either (Exception.throwIO . SesameCryptoException) pure)
+  sent <- Exception.tryAny (either (Exception.throwIO . SesameTransportException) pure =<< client.transport.sendBle encrypted outgoing)
   case sent of
-    Left err -> unregisterResponseWaiter client command.itemCode *> throwIO (err :: SomeException)
+    Left err -> unregisterResponseWaiter client command.itemCode *> Exception.throwIO err
     Right () -> waitRegisteredResponse client command.itemCode queue client.config.commandTimeoutMicros
 
 waitRegisteredResponse :: Sesame5Client -> ItemCode -> TQueue (Either SesameException SesameResponse) -> Int -> IO SesameResponse
 waitRegisteredResponse client expected queue timeoutMicros = do
-  result <- try (either throwIO pure =<< readTQueueOrTimeout queue (Just timeoutMicros))
+  result <- Exception.tryAny (either Exception.throwIO pure =<< readTQueueOrTimeout queue (Just timeoutMicros))
   unregisterResponseWaiter client expected
   case result of
-    Left err -> throwIO (err :: SomeException)
+    Left err -> Exception.throwIO err
     Right response -> pure response
 
 waitInitial :: Sesame5Client -> IO SessionToken
@@ -142,26 +142,38 @@ receiveLoop client =
       case packet of
         Left err -> broadcastException client (SesameTransportException err)
         Right (bytes, encrypted) -> do
-          result <- try (decodeIncoming client bytes encrypted)
+          result <- Exception.try (decodeIncoming client bytes encrypted) :: IO (Either SesameException ())
           case result of
             Left err -> broadcastException client (err :: SesameException)
             Right () -> foreverReceive
 
 decodeIncoming :: Sesame5Client -> ByteString -> Bool -> IO ()
 decodeIncoming client bytes encrypted = do
-  payload <-
-    if encrypted
-      then decryptWithCurrentCipher client bytes
-      else pure bytes
-  message <- either (throwIO . SesameProtocolException) pure (decodeMessage payload)
-  case message.opCode of
-    Response -> do
-      response <- either (throwIO . SesameProtocolException) pure (decodeResponse message.payload)
-      dispatchResponse client response
-    Publish -> do
-      publish <- either (throwIO . SesameProtocolException) pure (decodePublish message.payload)
-      atomically (writeTQueue client.publishQueue (Right publish))
-    other -> throwIO (SesameProtocolException (UnexpectedMessage ("expected response or publish, got " <> show other)))
+  payload <- decryptIncoming client bytes encrypted
+  case payload of
+    Nothing -> pure ()
+    Just plaintext -> do
+      message <- either (Exception.throwIO . SesameProtocolException) pure (decodeMessage plaintext)
+      case message.opCode of
+        Response -> do
+          response <- either (Exception.throwIO . SesameProtocolException) pure (decodeResponse message.payload)
+          dispatchResponse client response
+        Publish -> do
+          publish <- either (Exception.throwIO . SesameProtocolException) pure (decodePublish message.payload)
+          atomically (writeTQueue client.publishQueue (Right publish))
+        other -> Exception.throwIO (SesameProtocolException (UnexpectedMessage ("expected response or publish, got " <> show other)))
+
+decryptIncoming :: Sesame5Client -> ByteString -> Bool -> IO (Maybe ByteString)
+decryptIncoming client bytes encrypted =
+  if encrypted
+    then do
+      cipher <- atomically (readTVar client.cipherVar)
+      traverse
+        ( \activeCipher ->
+            Crypto.decrypt activeCipher bytes >>= either (Exception.throwIO . SesameCryptoException) pure
+        )
+        cipher
+    else pure (Just bytes)
 
 registerResponseWaiter :: Sesame5Client -> ItemCode -> IO (TQueue (Either SesameException SesameResponse))
 registerResponseWaiter client item = do
@@ -205,12 +217,7 @@ readTQueueOrTimeout queue timeoutMicros =
         )
         >>= \case
           Right value -> pure value
-          Left err -> throwIO err
-
-decryptWithCurrentCipher :: Sesame5Client -> ByteString -> IO ByteString
-decryptWithCurrentCipher client bytes = do
-  cipher <- atomically (readTVar client.cipherVar) >>= maybe (throwIO (SesameCryptoException AuthenticationFailed)) pure
-  Crypto.decrypt cipher bytes >>= either (throwIO . SesameCryptoException) pure
+          Left err -> Exception.throwIO err
 
 timestampLE :: ByteString -> Int
 timestampLE bytes = sum [fromIntegral (BS.index bytes i) * (256 ^ i) | i <- [0 .. min 3 (BS.length bytes - 1)]]

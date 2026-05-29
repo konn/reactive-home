@@ -65,6 +65,7 @@ library
     containers,
     dbus,
     haskesame-core,
+    safe-exceptions,
     stm,
 
 test-suite haskesame-transport-bluez-test

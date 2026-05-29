@@ -9,7 +9,7 @@ module Network.Mqtt.Connection.TCP (
   runTCPClient,
 ) where
 
-import Control.Exception (bracket, onException)
+import Control.Exception.Safe (bracket, onException)
 import Network.Mqtt.Connection.Internal (Conn (..), Connection (..), makeConnection)
 import Network.Socket (
   AddrInfo (..),

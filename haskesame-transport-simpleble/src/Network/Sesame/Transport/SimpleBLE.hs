@@ -10,7 +10,7 @@ module Network.Sesame.Transport.SimpleBLE (
 import Control.Applicative ((<|>))
 import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, try)
+import Control.Exception.Safe qualified as Exception
 import Control.Monad (filterM)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
@@ -63,7 +63,7 @@ sesameNotifyCharacteristicUuid = "16860003-a5ae-9856-b6d3-dbb4c676993e"
 
 connectSimpleBLE :: SimpleBLEConfig -> IO (Either SesameTransportError SesameTransport)
 connectSimpleBLE config = do
-  result <- try do
+  result <- Exception.tryAny do
     discovered <- discoverPeripheral config
     let peripheral = discovered.peripheral
     SimpleBLE.peripheralConnect peripheral
@@ -83,12 +83,12 @@ connectSimpleBLE config = do
         , closeBle = do
             atomically (writeTVar closed True)
             killThread monitor
-            _ <- try @SomeException (SimpleBLE.subscriptionUnsubscribe subscription)
-            _ <- try @SomeException (SimpleBLE.peripheralDisconnect peripheral)
+            _ <- Exception.tryAny (SimpleBLE.subscriptionUnsubscribe subscription)
+            _ <- Exception.tryAny (SimpleBLE.peripheralDisconnect peripheral)
             pure ()
         , advertisement = pure (maybe (Left AdvertisementUnavailable) (either (Left . TransportCallFailed . show) Right . decodeAdvertisement) advertisementData)
         }
-  pure (either (Left . TransportCallFailed . show @SomeException) Right result)
+  pure (either (Left . TransportCallFailed . show) Right result)
 
 discoverPeripheral :: SimpleBLEConfig -> IO DiscoveredPeripheral
 discoverPeripheral config = do
@@ -138,11 +138,11 @@ peripheralAdvertisement peripheral =
 
 safePeripheralManufacturerData :: SimpleBLE.Peripheral -> IO [SimpleBLE.ManufacturerData]
 safePeripheralManufacturerData peripheral =
-  either (const []) id <$> try @SomeException (SimpleBLE.peripheralManufacturerData peripheral)
+  either (const []) id <$> Exception.tryAny (SimpleBLE.peripheralManufacturerData peripheral)
 
 safePeripheralServices :: SimpleBLE.Peripheral -> IO [SimpleBLE.Service]
 safePeripheralServices peripheral =
-  either (const []) id <$> try @SomeException (SimpleBLE.peripheralServices peripheral)
+  either (const []) id <$> Exception.tryAny (SimpleBLE.peripheralServices peripheral)
 
 deviceNotFoundMessage :: SimpleBLEConfig -> [SimpleBLE.Peripheral] -> IO String
 deviceNotFoundMessage config peripherals = do
@@ -218,14 +218,14 @@ monitorConnection peripheral closed queue = go
       if isClosed
         then pure ()
         else do
-          connected <- either (const False) id <$> try @SomeException (SimpleBLE.peripheralIsConnected peripheral)
+          connected <- either (const False) id <$> Exception.tryAny (SimpleBLE.peripheralIsConnected peripheral)
           if connected
             then go
             else atomically (writeTQueue queue (Left TransportClosed))
 
 sendFragments :: SimpleBLE.Peripheral -> Text -> Text -> Bool -> ByteString -> IO (Either SesameTransportError ())
 sendFragments peripheral service characteristic encrypted bytes = do
-  result <- try @SomeException do
+  result <- Exception.tryAny do
     mapM_ (SimpleBLE.peripheralWriteRequest peripheral service characteristic) (fragment encrypted bytes)
   pure (either (Left . TransportCallFailed . show) (const (Right ())) result)
 
