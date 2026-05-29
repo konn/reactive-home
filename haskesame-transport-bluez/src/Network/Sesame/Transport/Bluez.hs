@@ -55,7 +55,6 @@ connectBluez config = do
     notifyChar <- requireField "notifyCharacteristicPath" resolved.notifyCharacteristicPath
     _ <- DBus.addMatch client (propertiesChangedRule notifyChar) (handleSignal queue state)
     _ <- DBus.addMatch client (propertiesChangedRule device) (handleDeviceSignal queue)
-    callNoBody client device "org.bluez.Device1" "Connect"
     callNoBody client notifyChar "org.bluez.GattCharacteristic1" "StartNotify"
     pure
       SesameTransport
@@ -101,7 +100,7 @@ resolveBluezConfig client config = do
       { devicePath = Just device
       , writeCharacteristicPath = config.writeCharacteristicPath <|> findCharacteristic sesameWriteCharacteristicUuid device objectsWithServices
       , notifyCharacteristicPath = config.notifyCharacteristicPath <|> findCharacteristic sesameNotifyCharacteristicUuid device objectsWithServices
-      , manufacturerData = config.manufacturerData <|> findManufacturerData device objectsWithServices
+      , manufacturerData = config.manufacturerData <|> findAdvertisementData device objectsWithServices
       }
 
 discoverDevice :: DBus.Client -> Int -> String -> IO (ManagedObjects, ObjectPath)
@@ -189,6 +188,10 @@ findCharacteristic uuid device =
 hasCharacteristic :: String -> ObjectPath -> ManagedObjects -> Bool
 hasCharacteristic uuid device = maybe False (const True) . findCharacteristic uuid device
 
+findAdvertisementData :: ObjectPath -> ManagedObjects -> Maybe ByteString
+findAdvertisementData device objects =
+  findManufacturerData device objects <|> findServiceData device objects
+
 findManufacturerData :: ObjectPath -> ManagedObjects -> Maybe ByteString
 findManufacturerData device objects = do
   interfaces <- Map.lookup device objects
@@ -197,8 +200,19 @@ findManufacturerData device objects = do
   values <- fromVariant @(Map Word16 Variant) raw
   listToMaybe (filter looksLikeSesameAdvertisement (mapMaybe manufacturerBytes (Map.elems values)))
 
+findServiceData :: ObjectPath -> ManagedObjects -> Maybe ByteString
+findServiceData device objects = do
+  interfaces <- Map.lookup device objects
+  props <- Map.lookup "org.bluez.Device1" interfaces
+  raw <- Map.lookup "ServiceData" props
+  values <- fromVariant @(Map String Variant) raw
+  listToMaybe (filter looksLikeSesameAdvertisement (mapMaybe advertisementBytes (Map.elems values)))
+
 manufacturerBytes :: Variant -> Maybe ByteString
-manufacturerBytes value =
+manufacturerBytes = advertisementBytes
+
+advertisementBytes :: Variant -> Maybe ByteString
+advertisementBytes value =
   fromVariant value <|> (BS.pack <$> fromVariant @[Word8] value)
 
 looksLikeSesameAdvertisement :: ByteString -> Bool
@@ -276,7 +290,10 @@ writePacket client path packet =
   let call =
         (methodCall path (interfaceName_ "org.bluez.GattCharacteristic1") (memberName_ "WriteValue"))
           { methodCallDestination = Just (busName_ "org.bluez")
-          , methodCallBody = [toVariant (BS.unpack packet :: [Word8]), toVariant (Map.empty :: Map String Variant)]
+          , methodCallBody =
+              [ toVariant (BS.unpack packet :: [Word8])
+              , toVariant (Map.singleton "type" (toVariant ("request" :: String)) :: Map String Variant)
+              ]
           }
    in DBus.call_ client call *> pure ()
 
