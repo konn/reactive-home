@@ -26,6 +26,7 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Word (Word8)
+import GHC.Generics (Generic)
 import Network.Mqtt.Codec (DecodeError (..), decodeBody, encodePacketBS)
 import Network.Mqtt.Exception (ConnectionError (..), MqttException (..), ProtocolError (..))
 import Network.Mqtt.Types.Packet (Packet)
@@ -39,6 +40,7 @@ data Connection = Connection
   , connectionWrite :: !(ByteString -> IO ())
   , connectionClose :: !(IO ())
   }
+  deriving stock (Generic)
 
 {- | A 'Connection' plus a single-reader leftover buffer used for pushback during
 framing. Only one thread (the reader) should read from a 'Conn'; the buffer is
@@ -48,6 +50,7 @@ data Conn = Conn
   { base :: !Connection
   , leftover :: !(IORef ByteString)
   }
+  deriving stock (Generic)
 
 -- | Build a buffered connection from raw read\/write\/close actions.
 makeConnection :: IO ByteString -> (ByteString -> IO ()) -> IO () -> IO Conn

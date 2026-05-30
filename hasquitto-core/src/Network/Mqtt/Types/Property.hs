@@ -13,6 +13,7 @@ import Data.ByteString (ByteString)
 import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import Data.Word (Word16, Word32)
+import GHC.Generics (Generic)
 import Network.Mqtt.Types.QoS (QoS)
 import Network.Mqtt.Types.Topic (Topic)
 
@@ -20,7 +21,7 @@ import Network.Mqtt.Types.Topic (Topic)
 payload is unspecified bytes or a UTF-8 encoded string.
 -}
 data PayloadFormat = Unspecified | Utf8
-  deriving stock (Show, Eq, Enum, Bounded)
+  deriving stock (Show, Eq, Enum, Bounded, Generic)
 
 {- | A single MQTT v5 property. This is the complete, closed set defined by the
 specification; per-packet legality (which properties may appear on which packet)
@@ -58,7 +59,7 @@ data Property
   | WildcardSubscriptionAvailable !Bool
   | SubscriptionIdentifierAvailable !Bool
   | SharedSubscriptionAvailable !Bool
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 -- | A property collection, in wire order. User properties may repeat.
 type Properties = [Property]

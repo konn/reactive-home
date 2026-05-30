@@ -4,6 +4,7 @@ module Network.Mqtt.Types.PacketId (
 ) where
 
 import Data.Word (Word16)
+import GHC.Generics (Generic)
 
 {- | A nonzero MQTT packet identifier (@1@ .. @65535@).
 
@@ -12,4 +13,4 @@ is the client's responsibility and the codec rejects @0@ where an identifier is
 required.
 -}
 newtype PacketId = PacketId {unPacketId :: Word16}
-  deriving stock (Show, Eq, Ord)
+  deriving stock (Show, Eq, Ord, Generic)

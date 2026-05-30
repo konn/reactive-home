@@ -6,6 +6,7 @@ module Network.Mqtt.Exception (
 ) where
 
 import Control.Exception (Exception)
+import GHC.Generics (Generic)
 import Network.Mqtt.Codec (DecodeError)
 import Network.Mqtt.Types.Property (Properties)
 import Network.Mqtt.Types.ReasonCode (ReasonCode)
@@ -16,7 +17,7 @@ data ConnectionError
     ConnectionClosed
   | -- | The connection ended in the middle of a frame (truncated).
     ConnectionClosedMidPacket
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 -- | Protocol-level conditions surfaced to the caller.
 data ProtocolError
@@ -38,7 +39,7 @@ data ProtocolError
     UnsupportedByServer !String
   | -- | The CONNECT/CONNACK handshake did not complete in time.
     ConnectTimedOut
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 -- | The top-level exception type for this library.
 data MqttException
@@ -48,6 +49,6 @@ data MqttException
     ProtocolViolation !ProtocolError
   | -- | The transport failed or closed.
     TransportClosed !ConnectionError
-  deriving stock (Show)
+  deriving stock (Show, Generic)
 
 instance Exception MqttException

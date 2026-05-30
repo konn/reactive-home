@@ -17,6 +17,7 @@ import Data.Bits (Bits, (.&.))
 import Data.ByteString.Lazy qualified as LBS
 import Data.Text (Text)
 import Data.UUID (UUID)
+import GHC.Generics (Generic)
 import Network.Sesame.Client (Sesame5Client)
 import Network.Sesame.Types (Sesame5MechStatus, batteryPercentage)
 import Network.Sesame.Types qualified as Sesame
@@ -26,7 +27,7 @@ data BridgeConfig = BridgeConfig
   , historyName :: !Text
   , debugLogging :: !Bool
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 defaultBridgeConfig :: BridgeConfig
 defaultBridgeConfig =
@@ -40,17 +41,19 @@ data BridgeDevice = BridgeDevice
   { deviceUuid :: !UUID
   , connectSesameClient :: !(IO ConnectedBridgeDevice)
   }
+  deriving stock (Generic)
 
 data ConnectedBridgeDevice = ConnectedBridgeDevice
   { sesameClient :: !Sesame5Client
   , disconnectSesameClient :: !(IO ())
   }
+  deriving stock (Generic)
 
 data LockCommand = CommandLock | CommandUnlock
-  deriving stock (Show, Eq, Ord)
+  deriving stock (Show, Eq, Ord, Generic)
 
 data LockState = Locked | Unlocked
-  deriving stock (Show, Eq, Ord)
+  deriving stock (Show, Eq, Ord, Generic)
 
 data StatusPayload = StatusPayload
   { position :: !Int
@@ -60,14 +63,14 @@ data StatusPayload = StatusPayload
   , chargingState :: !Text
   , statusLowBattery :: !Bool
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 data BridgeError
   = InvalidBaseTopic !Text
   | InvalidTopic !Text
   | InvalidCommandPayload !Text
   | UnknownDevice !UUID
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 instance ToJSON LockState where
   toJSON Locked = String "LOCKED"

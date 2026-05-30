@@ -26,6 +26,7 @@ import Data.ByteString (ByteString)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Text (Text)
 import Data.Word (Word16)
+import GHC.Generics (Generic)
 import Network.Mqtt.Types.PacketId (PacketId)
 import Network.Mqtt.Types.Property (Properties)
 import Network.Mqtt.Types.QoS (QoS)
@@ -50,7 +51,7 @@ data Packet
   | PingResp
   | Disconnect !DisconnectPacket
   | Auth !AuthPacket
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 -- | CONNECT (§3.1).
 data ConnectPacket = ConnectPacket
@@ -64,7 +65,7 @@ data ConnectPacket = ConnectPacket
   , will :: !(Maybe Will)
   , properties :: !Properties
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 -- | CONNACK (§3.2).
 data ConnAckPacket = ConnAckPacket
@@ -72,7 +73,7 @@ data ConnAckPacket = ConnAckPacket
   , reasonCode :: !ReasonCode
   , properties :: !Properties
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 {- | PUBLISH (§3.3). The @topic@ is the raw wire Topic Name; it may be empty when
 a Topic Alias property is present. @packetId@ is present iff @qos > QoS0@.
@@ -86,7 +87,7 @@ data PublishPacket = PublishPacket
   , payload :: !ByteString
   , properties :: !Properties
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 {- | The shared shape of PUBACK\/PUBREC\/PUBREL\/PUBCOMP (§3.4–3.7): a packet
 identifier, a reason code, and properties. The compact wire forms (reason code
@@ -97,7 +98,7 @@ data PubAckPacket = PubAckPacket
   , reasonCode :: !ReasonCode
   , properties :: !Properties
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 -- | SUBSCRIBE (§3.8).
 data SubscribePacket = SubscribePacket
@@ -105,7 +106,7 @@ data SubscribePacket = SubscribePacket
   , subscriptions :: !(NonEmpty Subscription)
   , properties :: !Properties
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 -- | A single entry in a SUBSCRIBE packet, with its subscription options.
 data Subscription = Subscription
@@ -115,7 +116,7 @@ data Subscription = Subscription
   , retainAsPublished :: !Bool
   , retainHandling :: !RetainHandling
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 -- | Retain Handling subscription option (§3.8.3.1).
 data RetainHandling
@@ -125,7 +126,7 @@ data RetainHandling
     SendIfNew
   | -- | Do not send retained messages at subscribe time (@2@).
     DontSend
-  deriving stock (Show, Eq, Enum, Bounded)
+  deriving stock (Show, Eq, Enum, Bounded, Generic)
 
 -- | SUBACK (§3.9); also reused for UNSUBACK (§3.11), whose shape is identical.
 data SubAckPacket = SubAckPacket
@@ -133,7 +134,7 @@ data SubAckPacket = SubAckPacket
   , reasonCodes :: !(NonEmpty ReasonCode)
   , properties :: !Properties
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 -- | UNSUBSCRIBE (§3.10).
 data UnsubscribePacket = UnsubscribePacket
@@ -141,18 +142,18 @@ data UnsubscribePacket = UnsubscribePacket
   , topicFilters :: !(NonEmpty TopicFilter)
   , properties :: !Properties
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 -- | DISCONNECT (§3.14). An empty wire body means reason @0x00@ and no properties.
 data DisconnectPacket = DisconnectPacket
   { reasonCode :: !ReasonCode
   , properties :: !Properties
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 -- | AUTH (§3.15), used for enhanced authentication.
 data AuthPacket = AuthPacket
   { reasonCode :: !ReasonCode
   , properties :: !Properties
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)

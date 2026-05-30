@@ -67,6 +67,7 @@ fromSesameConfig SesameConfig {..} =
     }
 
 newtype SesameUUID = UUID {raw :: T.Text}
+  deriving stock (Generic)
   deriving newtype
     ( IsString
     , Show

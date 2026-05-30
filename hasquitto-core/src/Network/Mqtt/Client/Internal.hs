@@ -62,6 +62,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime)
 import Data.Word (Word16, Word32)
+import GHC.Generics (Generic)
 import ListT qualified
 import Network.Mqtt.Codec (encodePacketBS)
 import Network.Mqtt.Connection.Internal
@@ -75,11 +76,11 @@ import System.Timeout (timeout)
 
 -- | How a full inbound QoS-0 queue behaves (QoS 0 has no flow control).
 data OverflowPolicy = DropNewest | DropOldest | Block
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 -- | Outbound Topic Alias policy.
 data TopicAliasMode = NoAliasing | AliasUpTo !Word16
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 -- | An enhanced-authentication challenge handed to the 'Authenticator'.
 data AuthChallenge = AuthChallenge
@@ -87,7 +88,7 @@ data AuthChallenge = AuthChallenge
   , authData :: !(Maybe ByteString)
   , properties :: !Properties
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 {- | The 'Authenticator' response: the next Authentication Data plus any extra
 properties.
@@ -96,7 +97,7 @@ data AuthResponse = AuthResponse
   { authData :: !(Maybe ByteString)
   , properties :: !Properties
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 {- | Enhanced authentication. 'method' goes in the CONNECT Authentication Method
 property; 'step' answers each server @0x18@ (Continue authentication) challenge.
@@ -106,6 +107,7 @@ data Authenticator = Authenticator
   , initial :: !(Maybe ByteString)
   , step :: !(AuthChallenge -> IO AuthResponse)
   }
+  deriving stock (Generic)
 
 -- | Options for establishing a client.
 data ConnectOptions = ConnectOptions
@@ -122,6 +124,7 @@ data ConnectOptions = ConnectOptions
   , receiveQueueBound :: !Int
   , overflowPolicy :: !OverflowPolicy
   }
+  deriving (Generic)
 
 {- | Sensible defaults: clean start, 60s keep-alive, no will\/auth, a 1024-deep
 inbound queue, drop-newest QoS-0 overflow, no aliasing.
@@ -149,7 +152,7 @@ data PublishOptions = PublishOptions
   , retain :: !Bool
   , properties :: !Properties
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 -- | QoS 0, no retain, no properties.
 defaultPublishOptions :: PublishOptions
@@ -160,7 +163,7 @@ data PublishResult
   = PublishedQoS0
   | AckedQoS1 !ReasonCode !Properties
   | AckedQoS2 !ReasonCode !Properties
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 -- | The result of the CONNECT\/CONNACK handshake.
 data Session = Session
@@ -169,7 +172,7 @@ data Session = Session
   , assignedClientId :: !(Maybe Text)
   , serverProperties :: !Properties
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 -- Internal state ------------------------------------------------------------
 

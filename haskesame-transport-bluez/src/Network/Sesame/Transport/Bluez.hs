@@ -20,6 +20,7 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Time (defaultTimeLocale, formatTime, getZonedTime)
 import Data.Word (Word16, Word8)
+import GHC.Generics (Generic)
 import Network.Sesame.Codec
 import Network.Sesame.Exception
 import Network.Sesame.Transport
@@ -36,7 +37,7 @@ data BluezConfig = BluezConfig
   , discoveryTimeoutSeconds :: !Int
   , debugLogging :: !Bool
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 defaultBluezConfig :: ObjectPath -> ObjectPath -> ObjectPath -> BluezConfig
 defaultBluezConfig device writeChar notifyChar =

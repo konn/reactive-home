@@ -25,6 +25,7 @@ import Data.ByteString.Lazy qualified as LBS
 import Data.Int (Int16)
 import Data.UUID qualified as UUID
 import Data.Word (Word16, Word8)
+import GHC.Generics (Generic)
 import Network.Sesame.Exception
 import Network.Sesame.Types
 
@@ -66,7 +67,7 @@ fragment encrypted bytes
 data Reassembly = Reassembly
   { reassemblyBuffer :: !ByteString
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 emptyReassembly :: Reassembly
 emptyReassembly = Reassembly BS.empty

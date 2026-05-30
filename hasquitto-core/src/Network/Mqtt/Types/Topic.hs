@@ -22,13 +22,14 @@ module Network.Mqtt.Types.Topic (
 import Data.String (IsString)
 import Data.Text (Text)
 import Data.Text qualified as T
+import GHC.Generics (Generic)
 
 {- | A topic /name/, used when publishing. A valid topic name is non-empty,
 contains no NUL character, contains no wildcard characters (@+@, @#@), and is at
 most 65535 UTF-8 bytes. Construct with 'mkTopic'.
 -}
 newtype Topic = Topic {raw :: Text}
-  deriving stock (Show, Eq, Ord)
+  deriving stock (Show, Eq, Ord, Generic)
   deriving newtype (IsString)
 
 stripPrefix :: Text -> Topic -> Maybe Topic
@@ -39,7 +40,7 @@ stripPrefix p (Topic t) = Topic <$> T.stripPrefix (p <> "/") t
 'mkTopicFilter'.
 -}
 newtype TopicFilter = TopicFilter {raw :: Text}
-  deriving stock (Show, Eq, Ord)
+  deriving stock (Show, Eq, Ord, Generic)
   deriving newtype (IsString)
 
 -- | Concatenates two topic levels with a slash. For example, @"home" <> "kitchen" == "home/kitchen"@.
@@ -73,7 +74,7 @@ data TopicError
     BadWildcard Text
   | -- | The UTF-8 encoding exceeded 65535 bytes.
     TooLong
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 maxTopicBytes :: Int
 maxTopicBytes = 65535

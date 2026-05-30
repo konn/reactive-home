@@ -6,6 +6,7 @@ module Network.Sesame.Exception (
 ) where
 
 import Control.Exception (Exception)
+import GHC.Generics (Generic)
 import Network.Sesame.Types (ItemCode, ResultCode)
 
 data SesameProtocolError
@@ -16,7 +17,7 @@ data SesameProtocolError
   | InvalidUuid
   | UnexpectedMessage !String
   | OperationFailed !ItemCode !ResultCode
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 data SesameCryptoError
   = InvalidSecretKeyLength !Int
@@ -25,19 +26,19 @@ data SesameCryptoError
   | AuthenticationFailed
   | CiphertextTooShort
   | CounterExhausted
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 data SesameTransportError
   = TransportClosed
   | TransportCallFailed !String
   | DeviceNotFound !String
   | AdvertisementUnavailable
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 data SesameException
   = SesameProtocolException !SesameProtocolError
   | SesameCryptoException !SesameCryptoError
   | SesameTransportException !SesameTransportError
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 instance Exception SesameException

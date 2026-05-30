@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE OverloadedLabels #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE NoFieldSelectors #-}
@@ -26,6 +27,8 @@ module Home.Reactive.MQTT (
 ) where
 
 import Control.Exception (Exception, throwIO)
+import Control.Lens ((&), (.~))
+import Data.Generics.Labels ()
 import Data.List.NonEmpty (NonEmpty)
 import Data.List.NonEmpty qualified as NE
 import Data.Text qualified as T
@@ -37,13 +40,7 @@ import Effectful.Network.Mqtt (Mqtt)
 import Effectful.Network.Mqtt qualified as EffM
 import FRP.Rhine
 import GHC.Generics (Generic)
-import Network.Mqtt.Client (ConnectOptions (..), Session, defaultConnectOptions)
 import Network.Mqtt.Client.AutoReconnect
-import Network.Mqtt.Connection.TCP
-import Network.Mqtt.Message (Message (..))
-import Network.Mqtt.Types.Packet (Subscription)
-import Network.Mqtt.Types.ReasonCode (ReasonCode, isSuccess)
-import Network.Mqtt.Types.Topic
 
 newtype MqttClock = MqttClock AutoClient
   deriving stock (Generic)
@@ -106,10 +103,10 @@ withMqttClient config k = do
           clientSettings config.host $
             fromIntegral config.port
   withClient
-    (defaultConnectOptions factory config.clientId)
-      { username = config.user
-      , password = TE.encodeUtf8 <$> config.password
-      }
+    ( (defaultConnectOptions factory config.clientId)
+        & #username .~ config.user
+        & #password .~ (TE.encodeUtf8 <$> config.password)
+    )
     defaultAutoReconnectConfig
     \client session -> do
       reasons <- subscribe client config.subscriptions []

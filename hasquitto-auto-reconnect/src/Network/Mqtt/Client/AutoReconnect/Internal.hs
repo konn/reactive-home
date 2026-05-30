@@ -71,6 +71,7 @@ import Data.List.NonEmpty qualified as NE
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
+import GHC.Generics (Generic)
 import Network.Mqtt.Client (Client, ConnectOptions (..), PublishOptions (..), PublishResult (..), Session (..), defaultConnectOptions, defaultPublishOptions)
 import Network.Mqtt.Client qualified as Mqtt
 import Network.Mqtt.Exception (ConnectionError (..), MqttException (..))
@@ -98,7 +99,7 @@ data BackoffConfig = BackoffConfig
   { baseDelay :: !Int
   , maxDelay :: !Int
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 -- | 100 ms base, capped at 30 s.
 defaultBackoffConfig :: BackoffConfig
@@ -122,6 +123,7 @@ data AutoReconnectConfig = AutoReconnectConfig
   thread that is /not/ cancelled by 'disconnect'.
   -}
   }
+  deriving stock (Generic)
 
 {- | Sensible defaults: 'defaultBackoffConfig', retry forever, resubscribe on a
 fresh session, no callbacks.
@@ -146,7 +148,7 @@ data Status
     Reconnecting
   | -- | Permanently closed (intentional 'disconnect' or retries exhausted).
     Closed
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 -- | An opaque auto-reconnecting client handle.
 data AutoClient = AutoClient

@@ -38,6 +38,7 @@ import Data.Text (Text)
 import Data.Text.Encoding qualified as TE
 import Foreign
 import Foreign.C
+import GHC.Generics (Generic)
 import Language.C.Inline qualified as C
 import Language.C.Inline.Cpp qualified as Cpp
 
@@ -232,7 +233,7 @@ data Service = Service
   , data_ :: !ByteString
   , characteristics :: ![Characteristic]
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 data Characteristic = Characteristic
   { uuid :: !Text
@@ -242,16 +243,16 @@ data Characteristic = Characteristic
   , canNotify :: !Bool
   , canIndicate :: !Bool
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 data ManufacturerData = ManufacturerData
   { manufacturerId :: !Word16
   , payload :: !ByteString
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 data SimpleBLEException = SimpleBLEException !String
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 instance Exception SimpleBLEException
 

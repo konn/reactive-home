@@ -20,6 +20,7 @@ import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.UUID qualified as UUID
+import GHC.Generics (Generic)
 import Network.Sesame.Codec
 import Network.Sesame.Exception
 import Network.Sesame.Transport
@@ -34,7 +35,7 @@ data SimpleBLEConfig = SimpleBLEConfig
   , writeCharacteristicUuid :: !(Maybe Text)
   , notifyCharacteristicUuid :: !(Maybe Text)
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 data DiscoveredPeripheral = DiscoveredPeripheral
   { peripheral :: !SimpleBLE.Peripheral

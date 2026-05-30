@@ -21,6 +21,7 @@ import Data.ByteString qualified as BS
 import Data.Int (Int16)
 import Data.Text (Text)
 import Data.Word (Word16, Word8)
+import GHC.Generics (Generic)
 import ListT qualified
 import Network.Sesame.Codec
 import Network.Sesame.Crypto qualified as Crypto
@@ -40,7 +41,7 @@ data Sesame5Client = Sesame5Client
 data Sesame5ClientConfig = Sesame5ClientConfig
   { commandTimeoutMicros :: !Int
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 defaultSesame5ClientConfig :: Sesame5ClientConfig
 defaultSesame5ClientConfig =

@@ -3,6 +3,8 @@ module Network.Mqtt.Types.QoS (
   QoS (..),
 ) where
 
+import GHC.Generics
+
 {- | MQTT Quality of Service level.
 
 The 'Enum' instance matches the 2-bit wire encoding: @'fromEnum' 'QoS0' == 0@,
@@ -16,4 +18,4 @@ data QoS
     QoS1
   | -- | Exactly once delivery.
     QoS2
-  deriving stock (Show, Read, Eq, Ord, Enum, Bounded)
+  deriving stock (Show, Read, Eq, Ord, Enum, Bounded, Generic)

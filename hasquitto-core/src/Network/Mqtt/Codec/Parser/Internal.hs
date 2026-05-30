@@ -38,6 +38,7 @@ import Data.ByteString qualified as BS
 import Data.Text (Text)
 import Data.Text.Encoding qualified as TE
 import Data.Word (Word16, Word32, Word8)
+import GHC.Generics (Generic)
 
 -- | What can go wrong while decoding a packet.
 data DecodeError
@@ -73,12 +74,13 @@ data DecodeError
     EmptyList
   | -- | A catch-all with context.
     Malformed !String
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 {- | A parser threads the remaining input and either fails with a typed
 'DecodeError' or yields a value plus the unconsumed bytes.
 -}
 newtype Parser a = Parser (ByteString -> Either DecodeError (a, ByteString))
+  deriving stock (Generic)
 
 -- | Run a parser over a buffer, yielding the result and the unconsumed bytes.
 runParser :: Parser a -> ByteString -> Either DecodeError (a, ByteString)

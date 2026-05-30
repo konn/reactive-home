@@ -28,6 +28,7 @@ import Data.Text (Text)
 import Data.Text.Encoding qualified as TE
 import Data.UUID (UUID)
 import Data.Word (Word16, Word8)
+import GHC.Generics (Generic)
 
 data ProductModel
   = Sesame5
@@ -36,7 +37,7 @@ data ProductModel
   | SesameTouch
   | Sesame5Usa
   | UnknownProductModel !Word16
-  deriving stock (Show, Eq, Ord)
+  deriving stock (Show, Eq, Ord, Generic)
 
 data ItemCode
   = Registration
@@ -51,64 +52,64 @@ data ItemCode
   | Stop
   | Toggle
   | UnknownItemCode !Word8
-  deriving stock (Show, Eq, Ord)
+  deriving stock (Show, Eq, Ord, Generic)
 
 data OpCode = Create | Read | Update | Delete | Sync | Async | Response | Publish | Undefine | UnknownOpCode !Word8
-  deriving stock (Show, Eq, Ord)
+  deriving stock (Show, Eq, Ord, Generic)
 
 data ResultCode = Success | InvalidFormat | NotSupported | StorageFail | InvalidSig | NotFound | Unknown | Busy | InvalidParam | InvalidAction | UnknownResultCode !Word8
-  deriving stock (Show, Eq, Ord)
+  deriving stock (Show, Eq, Ord, Generic)
 
 data PacketHeader = PacketHeader
   { isBeginning :: !Bool
   , isEnd :: !Bool
   , isEncrypted :: !Bool
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 data Advertisement = Advertisement
   { productModel :: !ProductModel
   , isRegistered :: !Bool
   , deviceUuid :: !UUID
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 data SesameMessage = SesameMessage
   { opCode :: !OpCode
   , payload :: !ByteString
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 data SesameCommand = SesameCommand
   { itemCode :: !ItemCode
   , commandPayload :: !ByteString
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 data SesameResponse = SesameResponse
   { responseItemCode :: !ItemCode
   , resultCode :: !ResultCode
   , responsePayload :: !ByteString
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 data SesamePublish = SesamePublish
   { publishItemCode :: !ItemCode
   , publishPayload :: !ByteString
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 newtype SessionToken = SessionToken {unSessionToken :: ByteString}
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 newtype SecretKey = SecretKey {unSecretKey :: ByteString}
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 newtype SessionKey = SessionKey {unSessionKey :: ByteString}
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 newtype HistoryTag = HistoryTag {unHistoryTag :: ByteString}
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 data Sesame5MechStatus = Sesame5MechStatus
   { rawBattery :: !Word16
@@ -116,14 +117,14 @@ data Sesame5MechStatus = Sesame5MechStatus
   , position :: !Int16
   , statusFlags :: !Word8
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 data Sesame5MechSetting = Sesame5MechSetting
   { lockPosition :: !Int16
   , unlockPosition :: !Int16
   , autoLockDuration :: !Word16
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 batteryVoltage :: Sesame5MechStatus -> Double
 batteryVoltage status = fromIntegral status.rawBattery * 2 / 1000

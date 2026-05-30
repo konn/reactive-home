@@ -3,6 +3,7 @@ module Network.Sesame.Transport (
 ) where
 
 import Data.ByteString (ByteString)
+import GHC.Generics (Generic)
 import Network.Sesame.Exception
 import Network.Sesame.Types
 
@@ -12,3 +13,4 @@ data SesameTransport = SesameTransport
   , closeBle :: IO ()
   , advertisement :: IO (Either SesameTransportError Advertisement)
   }
+  deriving stock (Generic)

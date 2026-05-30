@@ -10,6 +10,7 @@ module Network.Mqtt.Connection.TCP (
 ) where
 
 import Control.Exception.Safe (bracket, onException)
+import GHC.Generics (Generic)
 import Network.Mqtt.Connection.Internal (Conn (..), Connection (..), makeConnection)
 import Network.Socket (
   AddrInfo (..),
@@ -32,7 +33,7 @@ data ClientSettings = ClientSettings
   { host :: !HostName
   , port :: !PortNumber
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)
 
 -- | Build 'ClientSettings' from a host and port.
 clientSettings :: HostName -> PortNumber -> ClientSettings

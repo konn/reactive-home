@@ -4,6 +4,7 @@ module Network.Mqtt.Types.Will (
 ) where
 
 import Data.ByteString (ByteString)
+import GHC.Generics (Generic)
 import Network.Mqtt.Types.Property (Properties)
 import Network.Mqtt.Types.QoS (QoS)
 import Network.Mqtt.Types.Topic (Topic)
@@ -19,4 +20,4 @@ data Will = Will
   , retain :: !Bool
   , properties :: !Properties
   }
-  deriving stock (Show, Eq)
+  deriving stock (Show, Eq, Generic)

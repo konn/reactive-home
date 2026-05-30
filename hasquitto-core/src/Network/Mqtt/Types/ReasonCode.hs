@@ -54,6 +54,7 @@ module Network.Mqtt.Types.ReasonCode (
 ) where
 
 import Data.Word (Word8)
+import GHC.Generics (Generic)
 
 {- | A reason code is a single byte. We keep the raw representation (rather than a
 closed enumeration) so decoding is total and forward-compatible; named values are
@@ -61,7 +62,7 @@ provided as pattern synonyms. A value @< 0x80@ is a success/normal code, @>= 0x8
 is an error (§2.4).
 -}
 newtype ReasonCode = ReasonCode {unReasonCode :: Word8}
-  deriving stock (Eq, Ord)
+  deriving stock (Eq, Ord, Generic)
 
 instance Show ReasonCode where
   showsPrec _ (ReasonCode w)
