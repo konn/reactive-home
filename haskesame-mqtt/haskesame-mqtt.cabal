@@ -74,6 +74,7 @@ library
     stm,
     stm-containers,
     text,
+    time,
     uuid,
 
 test-suite haskesame-mqtt-test

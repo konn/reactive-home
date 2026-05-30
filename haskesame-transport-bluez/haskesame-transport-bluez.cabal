@@ -67,6 +67,7 @@ library
     haskesame-core,
     safe-exceptions,
     stm,
+    time,
 
 test-suite haskesame-transport-bluez-test
   import: defaults

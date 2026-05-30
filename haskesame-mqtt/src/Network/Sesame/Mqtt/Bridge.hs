@@ -18,6 +18,7 @@ import Data.ByteString.Lazy qualified as LBS
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
+import Data.Time (defaultTimeLocale, formatTime, getZonedTime)
 import Data.UUID (UUID)
 import Data.UUID qualified as UUID
 import Network.Mqtt.Client.AutoReconnect qualified as Mqtt
@@ -147,8 +148,13 @@ mapTopicError = either (Left . InvalidTopic . T.pack . show) Right
 debug :: BridgeConfig -> String -> IO ()
 debug config message =
   if config.debugLogging
-    then hPutStrLn stderr ("[haskesame-mqtt] " <> message)
+    then do
+      timestamp <- currentTimestamp
+      hPutStrLn stderr (timestamp <> " [haskesame-mqtt] " <> message)
     else pure ()
+
+currentTimestamp :: IO String
+currentTimestamp = formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S%Q %Z" <$> getZonedTime
 
 reconnectDelayMicros :: Int
 reconnectDelayMicros = 5000000

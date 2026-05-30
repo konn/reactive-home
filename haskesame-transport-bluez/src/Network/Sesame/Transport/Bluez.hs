@@ -18,6 +18,7 @@ import Data.List (find)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (listToMaybe, mapMaybe)
+import Data.Time (defaultTimeLocale, formatTime, getZonedTime)
 import Data.Word (Word16, Word8)
 import Network.Sesame.Codec
 import Network.Sesame.Exception
@@ -54,30 +55,40 @@ connectBluez config = do
   result <- Exception.tryAny do
     debug config "connecting to system D-Bus"
     client <- DBus.connectSystem
-    resolved <- resolveBluezConfig client config
-    queue <- newTQueueIO
-    state <- newTVarIO emptyReassembly
-    device <- requireField "devicePath" resolved.devicePath
-    writeChar <- requireField "writeCharacteristicPath" resolved.writeCharacteristicPath
-    notifyChar <- requireField "notifyCharacteristicPath" resolved.notifyCharacteristicPath
-    debug config ("resolved device=" <> formatObjectPath device <> ", write=" <> formatObjectPath writeChar <> ", notify=" <> formatObjectPath notifyChar)
-    _ <- DBus.addMatch client (propertiesChangedRule notifyChar) (handleSignal config queue state)
-    _ <- DBus.addMatch client (propertiesChangedRule device) (handleDeviceSignal config queue)
-    debug config "starting BlueZ notifications"
-    callNoBody config.discoveryTimeoutSeconds client notifyChar "org.bluez.GattCharacteristic1" "StartNotify"
-    debug config "BlueZ notifications started"
-    pure
-      SesameTransport
-        { sendBle = \encrypted bytes -> sendFragments config client writeChar encrypted bytes
-        , receiveBle = atomically (readTQueue queue)
-        , closeBle = do
-            debug config "closing BlueZ transport"
-            _ <- Exception.tryAny (callNoBody config.discoveryTimeoutSeconds client notifyChar "org.bluez.GattCharacteristic1" "StopNotify")
-            _ <- Exception.tryAny (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
-            DBus.disconnect client
-        , advertisement = pure (maybe (Left AdvertisementUnavailable) (either (Left . TransportCallFailed . show) Right . decodeAdvertisement) resolved.manufacturerData)
-        }
+    Exception.onException (setupBluezTransport client config) (DBus.disconnect client)
   pure (either (Left . TransportCallFailed . show) Right result)
+
+setupBluezTransport :: DBus.Client -> BluezConfig -> IO SesameTransport
+setupBluezTransport client config = do
+  resolved <- resolveBluezConfig client config
+  queue <- newTQueueIO
+  state <- newTVarIO emptyReassembly
+  device <- requireField "devicePath" resolved.devicePath
+  writeChar <- requireField "writeCharacteristicPath" resolved.writeCharacteristicPath
+  notifyChar <- requireField "notifyCharacteristicPath" resolved.notifyCharacteristicPath
+  Exception.onException
+    do
+      debug config ("resolved device=" <> formatObjectPath device <> ", write=" <> formatObjectPath writeChar <> ", notify=" <> formatObjectPath notifyChar)
+      _ <- DBus.addMatch client (propertiesChangedRule notifyChar) (handleSignal config queue state)
+      _ <- DBus.addMatch client (propertiesChangedRule device) (handleDeviceSignal config queue)
+      debug config "starting BlueZ notifications"
+      callNoBody config.discoveryTimeoutSeconds client notifyChar "org.bluez.GattCharacteristic1" "StartNotify"
+      debug config "BlueZ notifications started"
+      pure
+        SesameTransport
+          { sendBle = \encrypted bytes -> sendFragments config client writeChar encrypted bytes
+          , receiveBle = atomically (readTQueue queue)
+          , closeBle = closeBluezTransport client config device notifyChar
+          , advertisement = pure (maybe (Left AdvertisementUnavailable) (either (Left . TransportCallFailed . show) Right . decodeAdvertisement) resolved.manufacturerData)
+          }
+    (closeBluezTransport client config device notifyChar)
+
+closeBluezTransport :: DBus.Client -> BluezConfig -> ObjectPath -> ObjectPath -> IO ()
+closeBluezTransport client config device notifyChar = do
+  debug config "closing BlueZ transport"
+  _ <- Exception.tryAny (callNoBody config.discoveryTimeoutSeconds client notifyChar "org.bluez.GattCharacteristic1" "StopNotify")
+  _ <- Exception.tryAny (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
+  DBus.disconnect client
 
 type BluezProperties = Map String Variant
 
@@ -180,7 +191,11 @@ connectDevice client config device objects = do
     then debug config ("BlueZ device already connected; skipping Connect " <> formatObjectPath device)
     else do
       debug config ("connecting BlueZ device " <> formatObjectPath device)
-      callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Connect"
+      Exception.onException
+        (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Connect")
+        do
+          debug config ("cancelling failed BlueZ connect " <> formatObjectPath device)
+          ignoreErrors (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
   waitForServicesResolved client config.discoveryTimeoutSeconds device
 
 waitForServicesResolved :: DBus.Client -> Int -> ObjectPath -> IO ManagedObjects
@@ -402,8 +417,13 @@ bluezDiscoveryRefreshMicros = 1500000
 debug :: BluezConfig -> String -> IO ()
 debug config message =
   if config.debugLogging
-    then withDebugLock (hPutStrLn stderr ("[haskesame-transport-bluez] " <> message))
+    then do
+      timestamp <- currentTimestamp
+      withDebugLock (hPutStrLn stderr (timestamp <> " [haskesame-transport-bluez] " <> message))
     else pure ()
+
+currentTimestamp :: IO String
+currentTimestamp = formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S%Q %Z" <$> getZonedTime
 
 withDebugLock :: IO () -> IO ()
 withDebugLock action = modifyMVar_ debugLock \() -> action *> pure ()

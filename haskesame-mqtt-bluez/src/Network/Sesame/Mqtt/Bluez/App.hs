@@ -141,7 +141,7 @@ connectDevice debugLogging config = do
           , writeCharacteristicPath = objectPath_ . T.unpack <$> config.write_characteristic_path
           , notifyCharacteristicPath = objectPath_ . T.unpack <$> config.notify_characteristic_path
           , manufacturerData = manufacturer
-          , discoveryTimeoutSeconds = 5
+          , discoveryTimeoutSeconds = 10
           , debugLogging = debugLogging
           }
   sesame <- Sesame.newSesame5ClientWith (sesameClientConfig config) transport
