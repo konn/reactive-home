@@ -22,6 +22,7 @@ module Home.Reactive.App (
 
 import Control.Applicative ((<**>))
 import Control.Exception (throwIO)
+import Control.Monad (forM_)
 import Control.Monad.Trans.Class (lift)
 import Data.Functor ((<&>))
 import Data.Generics.Labels ()
@@ -161,6 +162,25 @@ display level a = do
     then Console.putStrLn . TE.encodeUtf8 . T.pack . show $ a
     else pure ()
 
+application ::
+  ( Concurrent :> es
+  , Reader HomeEnv :> es
+  , Console :> es
+  , Wreq :> es
+  , IOE :> es
+  , Mqtt :> es
+  ) =>
+  Eff es ()
+application = do
+  initializeESPresense
+  flow mainLoop
+
+initializeESPresense :: (Mqtt :> es, Reader HomeEnv :> es) => Eff es ()
+initializeESPresense = do
+  cfg <- asks @HomeEnv (.espresense)
+  forM_ cfg $ \espCfg ->
+    initialiseRooms espCfg.devices espCfg.rooms
+
 defaultMainWith :: Config -> IO ()
 defaultMainWith config = do
   let !topics =
@@ -196,8 +216,7 @@ defaultMainWith config = do
             runWreq $
               runReader HomeEnv {..} $
                 runMqttWith mqtt sess $
-                  runConcurrent $
-                    flow mainLoop
+                  runConcurrent application
 
 bulkMackerelS ::
   ( Wreq :> es

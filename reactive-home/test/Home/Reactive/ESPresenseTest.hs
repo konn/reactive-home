@@ -1,0 +1,83 @@
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
+
+module Home.Reactive.ESPresenseTest (test_tomlParsing) where
+
+import Data.Text qualified as T
+import Home.Reactive.ESPresense (ESPRoom (..), ESPresenseConfig (..))
+import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
+import Toml (decodeExact, genericCodec)
+
+test_tomlParsing :: TestTree
+test_tomlParsing =
+  testGroup
+    "TOML parsing"
+    [ testCase "uses ESPRoom defaults only when optional keys are absent" $
+        decodeExact (genericCodec @ESPresenseConfig) minimalRoomToml
+          @?= Right
+            ESPresenseConfig
+              { devices = []
+              , rooms =
+                  [ ESPRoom
+                      { name = "office"
+                      , max_distance = 16
+                      , skip_distance = 0.5
+                      , skip_ms = 5000
+                      }
+                  ]
+              , absent = []
+              , present = []
+              }
+    , testCase "keeps present ESPRoom values instead of replacing them with defaults" $
+        decodeExact (genericCodec @ESPresenseConfig) explicitRoomToml
+          @?= Right
+            ESPresenseConfig
+              { devices = []
+              , rooms =
+                  [ ESPRoom
+                      { name = "office"
+                      , max_distance = 3.25
+                      , skip_distance = 1.25
+                      , skip_ms = 1234
+                      }
+                  ]
+              , absent = []
+              , present = []
+              }
+    , testCase "does not hide invalid present ESPRoom values behind defaults" $
+        case decodeExact (genericCodec @ESPresenseConfig) invalidRoomToml of
+          Left _ -> pure ()
+          Right cfg -> assertFailure $ "expected TOML decode failure, got: " <> show cfg
+    ]
+
+minimalRoomToml :: T.Text
+minimalRoomToml =
+  T.unlines
+    [ "devices = []"
+    , ""
+    , "[[rooms]]"
+    , "name = \"office\""
+    ]
+
+explicitRoomToml :: T.Text
+explicitRoomToml =
+  T.unlines
+    [ "devices = []"
+    , ""
+    , "[[rooms]]"
+    , "name = \"office\""
+    , "max_distance = 3.25"
+    , "skip_distance = 1.25"
+    , "skip_ms = 1234"
+    ]
+
+invalidRoomToml :: T.Text
+invalidRoomToml =
+  T.unlines
+    [ "devices = []"
+    , ""
+    , "[[rooms]]"
+    , "name = \"office\""
+    , "max_distance = \"far\""
+    ]

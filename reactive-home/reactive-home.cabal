@@ -111,11 +111,19 @@ test-suite reactive-home-test
   main-is: Test.hs
   hs-source-dirs: test
   -- cabal-gild: discover test --exclude=test/Test.hs
-  other-modules:
+  other-modules: Home.Reactive.ESPresenseTest
+  build-tool-depends:
+    tasty-discover:tasty-discover
+
   ghc-options:
     -threaded
     -O2
     -rtsopts
     -with-rtsopts=-N
 
-  build-depends: reactive-home
+  build-depends:
+    reactive-home,
+    tasty,
+    tasty-hunit,
+    text,
+    tomland,

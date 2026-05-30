@@ -30,13 +30,17 @@ cabal test all                 # run all test suites
 cabal repl hasquitto-core      # REPL for a package
 ```
 
-Prefer HLS (via the haskell skill) for iterating; for a quick whole-project type check
-without codegen: `cabal build all --ghc-options -fno-code`.
+Prefer HLS (via the haskell skill) for iterating. Do not pass `-fno-code` via
+`--ghc-options`; it does not speed up Cabal builds here and can confuse the compiler.
 
 ### Tests — tasty + tasty-discover (property tests via `falsify`)
 
 Suites: `hasquitto-core-test` (unit/property, auto-discovered), `hasquitto-core-integration`
 (needs a live broker), `reactive-home-test`.
+
+- Test suites use `tasty` + `tasty-discover` with `--tree-display`. Keep `test/Test.hs`
+  as the generated driver only, and put tests in hierarchical modules mirroring source
+  modules, named like `Hoge.Fuga.FooTest`.
 
 ```bash
 cabal test hasquitto-core-test
