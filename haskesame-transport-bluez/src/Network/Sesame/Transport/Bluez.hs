@@ -187,16 +187,33 @@ refreshDeviceDiscovery client config macAddress device = do
 
 connectDevice :: DBus.Client -> BluezConfig -> ObjectPath -> ManagedObjects -> IO ManagedObjects
 connectDevice client config device objects = do
-  if isDeviceConnected device objects
-    then debug config ("BlueZ device already connected; skipping Connect " <> formatObjectPath device)
-    else do
-      debug config ("connecting BlueZ device " <> formatObjectPath device)
-      Exception.onException
-        (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Connect")
-        do
-          debug config ("cancelling failed BlueZ connect " <> formatObjectPath device)
-          ignoreErrors (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
+  resetStaleDeviceConnection client config device objects
+  debug config ("connecting BlueZ device " <> formatObjectPath device)
+  Exception.onException
+    (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Connect")
+    do
+      debug config ("cancelling failed BlueZ connect " <> formatObjectPath device)
+      ignoreErrors (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
   waitForServicesResolved client config.discoveryTimeoutSeconds device
+
+resetStaleDeviceConnection :: DBus.Client -> BluezConfig -> ObjectPath -> ManagedObjects -> IO ()
+resetStaleDeviceConnection client config device objects =
+  if isDeviceConnected device objects
+    then do
+      debug config ("disconnecting stale BlueZ device session " <> formatObjectPath device)
+      ignoreErrors (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
+      disconnected <-
+        poll config.discoveryTimeoutSeconds do
+          objects' <- getManagedObjects client
+          pure
+            if isDeviceConnected device objects'
+              then Nothing
+              else Just ()
+      maybe
+        (debug config "timed out waiting for BlueZ disconnect; continuing with connect")
+        (const (debug config "BlueZ device disconnected before reconnect"))
+        disconnected
+    else pure ()
 
 waitForServicesResolved :: DBus.Client -> Int -> ObjectPath -> IO ManagedObjects
 waitForServicesResolved client timeoutSeconds device = do
