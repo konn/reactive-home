@@ -23,10 +23,10 @@ module Home.Reactive.App (
 import Control.Applicative ((<**>))
 import Control.Exception (throwIO)
 import Control.Monad.Trans.Class (lift)
-import Data.ByteString.Char8 qualified as BS8
 import Data.Functor ((<&>))
 import Data.Generics.Labels ()
 import Data.List.NonEmpty qualified as NE
+import Data.Maybe (fromMaybe)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Effectful
@@ -56,9 +56,16 @@ data Config = Config
   , espresense :: !(Maybe ESPresenseConfig)
   , sesame :: !(Maybe SesameConfig)
   , mackerel :: !(Maybe MackerelConfig)
+  , logLevel :: !(Maybe LogLevel)
   }
   deriving (Show, Eq, Ord, Generic)
   deriving (HasCodec) via TomlTable Config
+
+data LogLevel = Debug | Info | Warning | Error
+  deriving (Show, Eq, Ord, Generic, Enum, Bounded)
+
+instance HasCodec LogLevel where
+  hasCodec = enumBounded
 
 data CLIOpts = CLIOpts {configFile :: !FilePath}
   deriving (Show, Eq, Ord, Generic)
@@ -87,6 +94,7 @@ data HomeEnv = HomeEnv
   , sesame :: {-# UNPACK #-} !(Maybe SesameEnv)
   , espresense :: !(Maybe ESPresenseConfig)
   , mackerel :: !(Maybe MackerelConfig)
+  , logLevel :: !LogLevel
   }
   deriving (Generic)
 
@@ -125,14 +133,20 @@ mainLogic ::
   ClSF (Eff es) EffMqttClock () [MackerelMetrics]
 mainLogic = proc () -> do
   msg <- tagS -< ()
-  arrMCl (Console.putStrLn . BS8.pack . show) -< msg
+  arrMCl (display Debug) -< msg
   ssm <- arr toMetrics <-< processSesame -< msg
   esp <- arr toMetrics <-< processESP -< msg
   returnA -< ssm <> esp
 
+display :: (Reader HomeEnv :> es, Console :> es, Show a) => LogLevel -> a -> Eff es ()
+display level a = do
+  minLevel <- asks @HomeEnv (.logLevel)
+  if level >= minLevel
+    then Console.putStrLn . TE.encodeUtf8 . T.pack . show $ a
+    else pure ()
+
 defaultMainWith :: Config -> IO ()
 defaultMainWith config = do
-  print config
   let !topics =
         foldMap espresenseTopicFilters config.espresense
           <> foldMap sesameTopicFilters config.sesame
@@ -159,6 +173,7 @@ defaultMainWith config = do
       let sesame = fromSesameConfig <$> config.sesame
           espresense = config.espresense
           mackerel = config.mackerel
+          logLevel = fromMaybe Info config.logLevel
       withMqttClient mqttCfg \mqtt sess ->
         runEff $
           runConsole $
