@@ -14,12 +14,12 @@ jobs:
     outputs:
       plan: ${{steps.list-ci.outputs.plan}}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
         with:
           ref: ${{github.event.pull_request.head.sha || github.sha}}
       - name: Enumerate CI plans
         id: list-ci
-        uses: actions/github-script@v6
+        uses: actions/github-script@v9
         with:
           script: |
             const script = require('./ci/scripts/enumerate-ci.js')
