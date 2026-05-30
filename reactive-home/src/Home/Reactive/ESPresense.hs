@@ -27,6 +27,7 @@ module Home.Reactive.ESPresense (
   aggregateESPStatus,
 ) where
 
+import Control.Applicative ((<|>))
 import Control.Lens ((&), (.~))
 import Control.Monad (unless, void)
 import Data.Aeson (FromJSON, ToJSON)
@@ -68,11 +69,14 @@ option def key codec =
     , codecWrite = codecWrite codec
     }
 
+numberFloat :: Key -> TomlCodec Float
+numberFloat key = Toml.float key <|> Toml.dimap round fromIntegral (Toml.int key)
+
 roomCodec :: Codec ESPRoom ESPRoom
 roomCodec = do
   name <- Toml.text "name" .= (.name)
-  max_distance <- option 16 "max_distance" (Toml.float "max_distance") .= (.max_distance)
-  skip_distance <- option 0.5 "skip_distance" (Toml.float "skip_distance") .= (.skip_distance)
+  max_distance <- option 16 "max_distance" (numberFloat "max_distance") .= (.max_distance)
+  skip_distance <- option 0.5 "skip_distance" (numberFloat "skip_distance") .= (.skip_distance)
   skip_ms <- option 5000 "skip_ms" (Toml.int "skip_ms") .= (.skip_ms)
   pure ESPRoom {..}
 
