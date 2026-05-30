@@ -6,13 +6,14 @@ description: |
 
 # Haskell Development Super-Skill
 
-This is the entry point for Haskell development in this repository. It coordinates the migrated Codex skills from the enabled Claude plugins in `.claude/settings.json`:
+This is the entry point for Haskell development in this repository. It coordinates the
+Codex skills with the agent-agnostic repository policy in `AGENTS.md`:
 
-- `haskell-skill@konn-haskell-claude-tools` maps to this skill.
-- `hoogle@claude-hoogle` maps to `.codex/skills/hoogle`.
+- Hoogle lookup maps to `.codex/skills/hoogle`.
 - Haddock dependency documentation lookup maps to `.codex/skills/haddock`.
-- Claude hook-based formatting maps to `.codex/skills/haskell-format`, `.codex/skills/haskell-cabal-gild`, `.codex/hooks.json`, and `.codex/hooks/`.
-- The Claude HLS plugin maps to this workflow instruction: prefer HLS when available. Codex does not consume `.lsp.json` as a skill.
+- Formatting maps to `.codex/skills/haskell-format`, `.codex/skills/haskell-cabal-gild`,
+  and the shared hooks under `.agents/hooks/`.
+- Prefer HLS when available before falling back to full Cabal builds.
 
 ## Ground Rules
 
@@ -22,7 +23,7 @@ This is the entry point for Haskell development in this repository. It coordinat
 - Format changed `.hs`, `.lhs`, and `.hsig` files with the `haskell-format` skill before compiling.
 - Format changed `.cabal`, `cabal.project`, `cabal.project.local`, and `cabal.project.freeze` files with the `haskell-cabal-gild` skill before compiling.
 - Prefer `(<>)` over `(++)` for all concatenation, including lists and strings.
-- After editing any `package.yaml`, run `hpack` to regenerate the corresponding `.cabal` file.
+- There is no `package.yaml`/hpack in this repository; edit `.cabal` files directly.
 
 ## Workflow
 
@@ -38,8 +39,7 @@ This is the entry point for Haskell development in this repository. It coordinat
 
 ## Dependency Changes
 
-- Edit `.cabal`, `package.yaml`, or `cabal.project` according to the project layout.
-- Run `hpack` after `package.yaml` edits.
+- Edit `.cabal` files or `cabal.project` according to the project layout.
 - Reformat cabal/project files with `haskell-cabal-gild`.
 - Run `cabal build <pkg>` for affected packages.
 - Run `cabal build all` only when a dependency or build-plan change needs broad validation or refreshed local docs.

@@ -30,7 +30,9 @@ stylish-haskell -i <file>
 
 ## Project Automation
 
-This repository has a Codex `PostToolUse` hook in `.codex/hooks.json` that runs `.codex/hooks/haskell-format-post-tool-use.sh` after `apply_patch` edits. The hook formats changed `.hs`, `.lhs`, and `.hsig` files. Re-read files if the hook reports that it changed them.
+This repository has shared `PostToolUse` hooks under `.agents/hooks/`, wired from
+Claude/Codex configuration. The Haskell formatting hook formats changed `.hs`, `.lhs`, and
+`.hsig` files. Re-read files if the hook reports that it changed them.
 
 ## Companion
 

@@ -39,7 +39,8 @@ rerun `cabal-gild --io <pkg>.cabal` after adding or removing modules.
 
 ## Project Automation
 
-This repository has a Codex `PostToolUse` hook in `.codex/hooks.json` that runs `.codex/hooks/cabal-gild-post-tool-use.sh` after `apply_patch` edits.
+This repository has shared `PostToolUse` hooks under `.agents/hooks/`, wired from
+Claude/Codex configuration.
 
 - A changed `.cabal` or `cabal.project*` file is formatted with `cabal-gild --io`.
 - A changed `.hs`, `.lhs`, or `.hsig` file refreshes the nearest enclosing `.cabal` file only if it uses a `-- cabal-gild: discover` pragma.
