@@ -143,6 +143,20 @@ type MackerelClock es = IOClock (Eff es) (Millisecond 1200)
 
 type AppClock es = SeqClock EffMqttClock (MackerelClock es)
 
+bulkMackerelS ::
+  ( Wreq :> es
+  , Reader HomeEnv :> es
+  , Concurrent :> es
+  , ToMackerelMetrics a
+  , Console :> es
+  ) =>
+  ClSF (Eff es) (MackerelClock es) a ()
+bulkMackerelS = proc stts -> do
+  mcfg <- constMCl (asks @HomeEnv (.mackerel)) -< ()
+  case mcfg of
+    Nothing -> returnA -< ()
+    Just cfg -> arrMCl (uncurry postMackerel) -< (cfg, stts)
+
 mainLoop ::
   ( Reader HomeEnv :> es
   , Mqtt :> es
@@ -217,20 +231,6 @@ defaultMainWith config = do
               runReader HomeEnv {..} $
                 runMqttWith mqtt sess $
                   runConcurrent application
-
-bulkMackerelS ::
-  ( Wreq :> es
-  , Reader HomeEnv :> es
-  , Concurrent :> es
-  , ToMackerelMetrics a
-  , Console :> es
-  ) =>
-  ClSF (Eff es) (MackerelClock es) [a] ()
-bulkMackerelS = proc stts -> do
-  mcfg <- constMCl (asks @HomeEnv (.mackerel)) -< ()
-  case mcfg of
-    Nothing -> returnA -< ()
-    Just cfg -> arrMCl (uncurry postMackerel) -< (cfg, stts)
 
 defaultMain :: IO ()
 defaultMain = do

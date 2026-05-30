@@ -5,6 +5,7 @@
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE DisambiguateRecordFields #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedLabels #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -25,6 +26,11 @@ module Home.Reactive.ESPresense (
   parseESPStatusS,
   buildESPStatus,
   aggregateESPStatus,
+  occupancyListS,
+  OccupancyList,
+  isVacant,
+  occupants,
+  numOccupants,
 ) where
 
 import Control.Applicative ((<|>))
@@ -56,6 +62,7 @@ data ESPRoom = ESPRoom
   , max_distance :: !Float
   , skip_distance :: !Float
   , skip_ms :: !Int
+  , timeout :: !Duration
   }
   deriving (Show, Eq, Ord, Generic)
 
@@ -78,6 +85,7 @@ roomCodec = do
   max_distance <- option 16 "max_distance" (numberFloat "max_distance") .= (.max_distance)
   skip_distance <- option 0.5 "skip_distance" (numberFloat "skip_distance") .= (.skip_distance)
   skip_ms <- option 5000 "skip_ms" (Toml.int "skip_ms") .= (.skip_ms)
+  timeout <- option (Duration 5) "timeout" (Toml.textBy formatDuration parseDuration "timeout") .= (.timeout)
   pure ESPRoom {..}
 
 instance HasItemCodec ESPRoom where
@@ -89,24 +97,15 @@ instance HasCodec ESPRoom where
 data ESPresenseConfig = ESPresenseConfig
   { devices :: ![T.Text]
   , rooms :: ![ESPRoom]
-  , absent :: ![ESPCondition]
-  , present :: ![ESPCondition]
   }
   deriving (Show, Eq, Ord, Generic)
   deriving (HasCodec, HasItemCodec) via TomlTable ESPresenseConfig
 
-data ESPCondition = ESPCondition
-  { room :: !T.Text
-  , device :: ![T.Text]
-  , distance :: !Double
-  , averageStep :: !(Maybe Int)
-  , timeout :: !(Maybe (Diff UTCTime))
-  }
-  deriving (Show, Eq, Ord, Generic)
-  deriving (HasCodec, HasItemCodec) via TomlTable ESPCondition
-
-newtype Duration = Duration (Diff UTCTime)
+newtype Duration = Duration {seconds :: Diff UTCTime}
   deriving (Eq, Ord, Generic)
+
+instance Show Duration where
+  show (Duration secs) = show secs ++ "s"
 
 instance HasCodec Duration where
   hasCodec = textBy formatDuration parseDuration
@@ -248,6 +247,32 @@ parseESPStatusS ::
 parseESPStatusS = proc msg -> do
   TimeInfo {..} <- timeInfo -< ()
   returnA -< uncurry (buildESPStatus absolute) <$> parseRawESPStatus msg
+
+type OccupancyList = HashMap ESPDeviceId ESPStatus
+
+isVacant :: OccupancyList -> Bool
+isVacant = HM.null
+
+occupants :: OccupancyList -> [ESPDeviceId]
+occupants = HM.keys
+
+numOccupants :: OccupancyList -> Int
+numOccupants = HM.size
+
+occupancyListS ::
+  (Clock (Eff es) cl, Time cl ~ UTCTime) =>
+  ESPRoom ->
+  ClSF (Eff es) cl (Maybe ESPStatus) OccupancyList
+occupancyListS room = feedback HM.empty $ proc (event, residents) -> do
+  TimeInfo {..} <- timeInfo -< ()
+  let residents' =
+        HM.filter
+          (\stt -> absolute `diffTime` stt.timestamp < room.timeout.seconds)
+          residents
+
+  case event of
+    Nothing -> returnA -< (residents', residents')
+    Just stt -> returnA -< (HM.insert stt.id stt residents', residents')
 
 aggregateESPStatus ::
   BehaviourF (Eff es) UTCTime (Maybe ESPStatus) (HashMap (ESPSensorName, ESPDeviceId) ESPSensorState)

@@ -84,6 +84,7 @@ library
     optparse-applicative,
     rhine,
     safe-exceptions,
+    stm-containers,
     text,
     time,
     tomland,
