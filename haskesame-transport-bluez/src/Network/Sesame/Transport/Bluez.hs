@@ -24,6 +24,7 @@ import Network.Sesame.Exception
 import Network.Sesame.Transport
 import System.IO (hPutStrLn, stderr)
 import System.IO.Unsafe (unsafePerformIO)
+import System.Timeout (timeout)
 
 data BluezConfig = BluezConfig
   { deviceAddress :: !(Maybe String)
@@ -63,7 +64,7 @@ connectBluez config = do
     _ <- DBus.addMatch client (propertiesChangedRule notifyChar) (handleSignal config queue state)
     _ <- DBus.addMatch client (propertiesChangedRule device) (handleDeviceSignal config queue)
     debug config "starting BlueZ notifications"
-    callNoBody client notifyChar "org.bluez.GattCharacteristic1" "StartNotify"
+    callNoBody config.discoveryTimeoutSeconds client notifyChar "org.bluez.GattCharacteristic1" "StartNotify"
     debug config "BlueZ notifications started"
     pure
       SesameTransport
@@ -71,8 +72,8 @@ connectBluez config = do
         , receiveBle = atomically (readTQueue queue)
         , closeBle = do
             debug config "closing BlueZ transport"
-            _ <- Exception.tryAny (callNoBody client notifyChar "org.bluez.GattCharacteristic1" "StopNotify")
-            _ <- Exception.tryAny (callNoBody client device "org.bluez.Device1" "Disconnect")
+            _ <- Exception.tryAny (callNoBody config.discoveryTimeoutSeconds client notifyChar "org.bluez.GattCharacteristic1" "StopNotify")
+            _ <- Exception.tryAny (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
             DBus.disconnect client
         , advertisement = pure (maybe (Left AdvertisementUnavailable) (either (Left . TransportCallFailed . show) Right . decodeAdvertisement) resolved.manufacturerData)
         }
@@ -103,12 +104,13 @@ resolveBluezConfig client config = do
         Nothing -> do
           debug config ("BlueZ device not found by address " <> macAddress <> "; starting discovery")
           discoverDevice client config.discoveryTimeoutSeconds macAddress
-  resetDeviceConnection client config device objects
-  debug config ("connecting BlueZ device " <> formatObjectPath device)
-  callNoBody client device "org.bluez.Device1" "Connect"
+  refreshedObjects <- case config.deviceAddress of
+    Just macAddress -> refreshDeviceDiscovery client config macAddress device
+    Nothing -> pure objects
+  objectsAfterConnect <- connectDevice client config device refreshedObjects
   objectsWithServices <-
     if needsCharacteristicDiscovery config
-      then debug config "waiting for Sesame GATT characteristics" *> waitForCharacteristics client config.discoveryTimeoutSeconds device objects
+      then debug config "waiting for Sesame GATT characteristics" *> waitForCharacteristics client config.discoveryTimeoutSeconds device objectsAfterConnect
       else debug config "using configured Sesame GATT characteristic paths" *> getManagedObjects client
   debug config ("advertisement data available=" <> show (maybe False (const True) (config.manufacturerData <|> findAdvertisementData device objectsWithServices)))
   pure
@@ -124,8 +126,8 @@ discoverDevice client timeoutSeconds macAddress = do
   objects <- getManagedObjects client
   adapter <- maybe (fail "BlueZ adapter not found") pure (findAdapter objects)
   Exception.bracket_
-    (callNoBody client adapter "org.bluez.Adapter1" "StartDiscovery")
-    (ignoreErrors (callNoBody client adapter "org.bluez.Adapter1" "StopDiscovery"))
+    (callNoBody timeoutSeconds client adapter "org.bluez.Adapter1" "StartDiscovery")
+    (ignoreErrors (callNoBody timeoutSeconds client adapter "org.bluez.Adapter1" "StopDiscovery"))
     ( poll timeoutSeconds do
         objects' <- getManagedObjects client
         pure ((objects',) <$> findDeviceByAddress macAddress objects')
@@ -153,21 +155,44 @@ needsCharacteristicDiscovery config =
   maybe True (const False) config.writeCharacteristicPath
     || maybe True (const False) config.notifyCharacteristicPath
 
-resetDeviceConnection :: DBus.Client -> BluezConfig -> ObjectPath -> ManagedObjects -> IO ()
-resetDeviceConnection client config device objects =
+refreshDeviceDiscovery :: DBus.Client -> BluezConfig -> String -> ObjectPath -> IO ManagedObjects
+refreshDeviceDiscovery client config macAddress device = do
+  objects <- getManagedObjects client
+  adapter <- maybe (fail "BlueZ adapter not found") pure (findAdapter objects)
+  debug config ("refreshing BlueZ discovery for " <> macAddress)
+  Exception.bracket_
+    (callNoBody config.discoveryTimeoutSeconds client adapter "org.bluez.Adapter1" "StartDiscovery")
+    (ignoreErrors (callNoBody config.discoveryTimeoutSeconds client adapter "org.bluez.Adapter1" "StopDiscovery"))
+    do
+      threadDelay bluezDiscoveryRefreshMicros
+      refreshed <- getManagedObjects client
+      case findDeviceByAddress macAddress refreshed of
+        Just refreshedDevice
+          | refreshedDevice == device -> pure refreshed
+          | otherwise -> do
+              debug config ("BlueZ device path changed after discovery: " <> formatObjectPath refreshedDevice)
+              pure refreshed
+        Nothing -> fail ("BlueZ device disappeared during discovery refresh: " <> macAddress)
+
+connectDevice :: DBus.Client -> BluezConfig -> ObjectPath -> ManagedObjects -> IO ManagedObjects
+connectDevice client config device objects = do
   if isDeviceConnected device objects
-    then do
-      debug config ("disconnecting stale BlueZ device session " <> formatObjectPath device)
-      ignoreErrors (callNoBody client device "org.bluez.Device1" "Disconnect")
-      disconnected <-
-        poll config.discoveryTimeoutSeconds do
-          objects' <- getManagedObjects client
-          pure
-            if isDeviceConnected device objects'
-              then Nothing
-              else Just ()
-      maybe (debug config "timed out waiting for BlueZ disconnect; continuing with connect") (const (debug config "BlueZ device disconnected before reconnect")) disconnected
-    else pure ()
+    then debug config ("BlueZ device already connected; skipping Connect " <> formatObjectPath device)
+    else do
+      debug config ("connecting BlueZ device " <> formatObjectPath device)
+      callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Connect"
+  waitForServicesResolved client config.discoveryTimeoutSeconds device
+
+waitForServicesResolved :: DBus.Client -> Int -> ObjectPath -> IO ManagedObjects
+waitForServicesResolved client timeoutSeconds device = do
+  resolved <-
+    poll timeoutSeconds do
+      objects <- getManagedObjects client
+      pure do
+        if isDeviceConnected device objects && areDeviceServicesResolved device objects
+          then Just objects
+          else Nothing
+  maybe (fail "BlueZ device services were not resolved") pure resolved
 
 poll :: Int -> IO (Maybe a) -> IO (Maybe a)
 poll timeoutSeconds action = go (max 1 timeoutSeconds * 10)
@@ -226,6 +251,13 @@ isDeviceConnected device objects =
     interfaces <- Map.lookup device objects
     props <- Map.lookup "org.bluez.Device1" interfaces
     lookupProperty "Connected" props
+
+areDeviceServicesResolved :: ObjectPath -> ManagedObjects -> Bool
+areDeviceServicesResolved device objects =
+  maybe False id do
+    interfaces <- Map.lookup device objects
+    props <- Map.lookup "org.bluez.Device1" interfaces
+    lookupProperty "ServicesResolved" props
 
 findAdvertisementData :: ObjectPath -> ManagedObjects -> Maybe ByteString
 findAdvertisementData device objects =
@@ -336,11 +368,11 @@ sendFragments config client path encrypted bytes = do
   let packets = fragment encrypted bytes
   debug config ("writing BLE message: payload_bytes=" <> show (BS.length bytes) <> ", encrypted=" <> show encrypted <> ", fragments=" <> show (length packets))
   result <- Exception.tryAny do
-    mapM_ (writePacket client path) packets
+    mapM_ (writePacket config.discoveryTimeoutSeconds client path) packets
   pure (either (Left . TransportCallFailed . show) (const (Right ())) result)
 
-writePacket :: DBus.Client -> ObjectPath -> ByteString -> IO ()
-writePacket client path packet =
+writePacket :: Int -> DBus.Client -> ObjectPath -> ByteString -> IO ()
+writePacket timeoutSeconds client path packet =
   let call =
         (methodCall path (interfaceName_ "org.bluez.GattCharacteristic1") (memberName_ "WriteValue"))
           { methodCallDestination = Just (busName_ "org.bluez")
@@ -349,15 +381,23 @@ writePacket client path packet =
               , toVariant (Map.singleton "type" (toVariant ("request" :: String)) :: Map String Variant)
               ]
           }
-   in DBus.call_ client call *> pure ()
+      label = "org.bluez.GattCharacteristic1.WriteValue " <> formatObjectPath path
+   in maybe (fail ("BlueZ D-Bus call timed out: " <> label)) (const (pure ())) =<< timeout (callTimeoutMicros timeoutSeconds) (DBus.call_ client call)
 
-callNoBody :: DBus.Client -> ObjectPath -> String -> String -> IO ()
-callNoBody client path iface member =
+callNoBody :: Int -> DBus.Client -> ObjectPath -> String -> String -> IO ()
+callNoBody timeoutSeconds client path iface member =
   let call =
         (methodCall path (interfaceName_ iface) (memberName_ member))
           { methodCallDestination = Just (busName_ "org.bluez")
           }
-   in DBus.call_ client call *> pure ()
+      label = iface <> "." <> member <> " " <> formatObjectPath path
+   in maybe (fail ("BlueZ D-Bus call timed out: " <> label)) (const (pure ())) =<< timeout (callTimeoutMicros timeoutSeconds) (DBus.call_ client call)
+
+callTimeoutMicros :: Int -> Int
+callTimeoutMicros timeoutSeconds = max 1 timeoutSeconds * 1000000
+
+bluezDiscoveryRefreshMicros :: Int
+bluezDiscoveryRefreshMicros = 1500000
 
 debug :: BluezConfig -> String -> IO ()
 debug config message =
