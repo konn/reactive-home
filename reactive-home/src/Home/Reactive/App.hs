@@ -128,15 +128,31 @@ processESP = proc msg -> do
   aggregateESPStatus -< stat
   returnA -< stat
 
-mainLogic ::
+processMqtt ::
   (Reader HomeEnv :> es, Console :> es) =>
   ClSF (Eff es) EffMqttClock () [MackerelMetrics]
-mainLogic = proc () -> do
+processMqtt = proc () -> do
   msg <- tagS -< ()
   arrMCl (display Debug) -< msg
   ssm <- arr toMetrics <-< processSesame -< msg
   esp <- arr toMetrics <-< processESP -< msg
   returnA -< ssm <> esp
+
+type MackerelClock es = IOClock (Eff es) (Millisecond 1200)
+
+type AppClock es = SeqClock EffMqttClock (MackerelClock es)
+
+mainLoop ::
+  ( Reader HomeEnv :> es
+  , Mqtt :> es
+  , Console :> es
+  , Wreq :> es
+  , Concurrent :> es
+  , IOE :> es
+  ) =>
+  Rhine (Eff es) (AppClock es) () ()
+mainLoop =
+  processMqtt @@ EffMqttClock >-- collect --> bulkMackerelS @@ ioClock waitClock
 
 display :: (Reader HomeEnv :> es, Console :> es, Show a) => LogLevel -> a -> Eff es ()
 display level a = do
@@ -180,8 +196,8 @@ defaultMainWith config = do
             runWreq $
               runReader HomeEnv {..} $
                 runMqttWith mqtt sess $
-                  runConcurrent do
-                    flow $ mainLogic @@ EffMqttClock >-- collect --> (bulkMackerelS @@ ioClock waitClock)
+                  runConcurrent $
+                    flow mainLoop
 
 bulkMackerelS ::
   ( Wreq :> es
@@ -190,7 +206,7 @@ bulkMackerelS ::
   , ToMackerelMetrics a
   , Console :> es
   ) =>
-  ClSF (Eff es) (IOClock (Eff es) (Millisecond 1_200)) [a] ()
+  ClSF (Eff es) (MackerelClock es) [a] ()
 bulkMackerelS = proc stts -> do
   mcfg <- constMCl (asks @HomeEnv (.mackerel)) -< ()
   case mcfg of

@@ -64,12 +64,14 @@ library
     Home.Reactive.Metrics.Mackerel
     Home.Reactive.Orphans
     Home.Reactive.Sesame5
+    Home.Reactive.Utils
 
   -- cabal-gild: discover src --include=src/**/Internal.hs --include=src/**/Internal/**/*.hs
   other-modules:
   build-depends:
     aeson,
     bytestring,
+    containers,
     dlist,
     effectful,
     generic-lens,
