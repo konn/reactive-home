@@ -14,12 +14,12 @@ jobs:
     outputs:
       plan: ${{steps.list-ci.outputs.plan}}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v3
         with:
           ref: ${{github.event.pull_request.head.sha || github.sha}}
       - name: Enumerate CI plans
         id: list-ci
-        uses: actions/github-script@v9
+        uses: actions/github-script@v6
         with:
           script: |
             const script = require('./ci/scripts/enumerate-ci.js')
@@ -118,7 +118,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           path: ${{env.artifact-name}}.tar.zst
-          name: ${{env.artifact}}.tar.zst
+          name: ${{env.artifact-name}}
           retention-days: 1
       - name: List Binaries
         id: list-bins
@@ -166,7 +166,7 @@ jobs:
         id: download
         uses: actions/download-artifact@v8
         with:
-          name: ${{env.artifact}}.tar.zst
+          name: ${{env.artifact}}
       - name: Decompress
         run: tar xaf ${{env.artifact}}.tar.zst
       - name: Install SimpleBLE
