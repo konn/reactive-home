@@ -8,6 +8,7 @@ module Network.Sesame.Mqtt.Bluez.App (
   runApp,
 ) where
 
+import Control.Exception qualified as Exception
 import DBus (objectPath_)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
@@ -145,7 +146,7 @@ connectDevice debugLogging config = do
           , debugLogging = debugLogging
           }
   sesame <- Sesame.newSesame5ClientWith (sesameClientConfig config) transport
-  _ <- Sesame.login sesame (SecretKey secret)
+  _ <- Sesame.login sesame (SecretKey secret) `Exception.onException` transport.closeBle
   pure
     ConnectedSesameDevice
       { sesameClient = sesame

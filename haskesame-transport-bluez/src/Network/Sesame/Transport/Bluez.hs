@@ -74,6 +74,7 @@ setupBluezTransport client config = do
       debug config "starting BlueZ notifications"
       callNoBody config.discoveryTimeoutSeconds client notifyChar "org.bluez.GattCharacteristic1" "StartNotify"
       debug config "BlueZ notifications started"
+      snapshotNotifyValue client config queue state notifyChar
       pure
         SesameTransport
           { sendBle = \encrypted bytes -> sendFragments config client writeChar encrypted bytes
@@ -364,23 +365,51 @@ handleSignal config queue state signalMessage =
       , Just (changed :: Map String Variant) <- fromVariant changedVar
       , Just valueVar <- Map.lookup "Value" changed
       , Just bytes <- variantBytes valueVar ->
-          do
-            event <-
-              atomically do
-                current <- readTVar state
-                case pushFragment current bytes of
-                  Left err -> writeTQueue queue (Left (TransportCallFailed (show err))) *> pure ("notification reassembly failed: " <> show err)
-                  Right (next, Nothing) -> writeTVar state next *> pure ("notification fragment received: bytes=" <> show (BS.length bytes))
-                  Right (next, Just (payload, encrypted)) ->
-                    writeTVar state next
-                      *> writeTQueue queue (Right (payload, encrypted))
-                      *> pure ("notification message received: payload_bytes=" <> show (BS.length payload) <> ", encrypted=" <> show encrypted)
-            debug config event
+          processNotificationBytes config queue state "notification" bytes
       | Just (iface :: String) <- fromVariant ifaceVar
       , iface == "org.bluez.GattCharacteristic1"
       , Just (changed :: Map String Variant) <- fromVariant changedVar ->
           debug config ("GattCharacteristic1 change without decodable Value: keys=" <> show (Map.keys changed))
     _ -> pure ()
+
+snapshotNotifyValue :: DBus.Client -> BluezConfig -> TQueue (Either SesameTransportError (ByteString, Bool)) -> TVar Reassembly -> ObjectPath -> IO ()
+snapshotNotifyValue client config queue state notifyChar = do
+  result <- Exception.tryAny (readCharacteristicValue client notifyChar)
+  case result of
+    Right (Just bytes)
+      | not (BS.null bytes) -> processNotificationBytes config queue state "notification snapshot" bytes
+    Right _ -> pure ()
+    Left err -> debug config ("failed to snapshot BlueZ notification value: " <> show err)
+
+processNotificationBytes :: BluezConfig -> TQueue (Either SesameTransportError (ByteString, Bool)) -> TVar Reassembly -> String -> ByteString -> IO ()
+processNotificationBytes config queue state label bytes = do
+  event <-
+    atomically do
+      current <- readTVar state
+      case pushFragment current bytes of
+        Left err -> writeTQueue queue (Left (TransportCallFailed (show err))) *> pure (label <> " reassembly failed: " <> show err)
+        Right (next, Nothing) -> writeTVar state next *> pure (label <> " fragment received: bytes=" <> show (BS.length bytes))
+        Right (next, Just (payload, encrypted)) ->
+          writeTVar state next
+            *> writeTQueue queue (Right (payload, encrypted))
+            *> pure (label <> " message received: payload_bytes=" <> show (BS.length payload) <> ", encrypted=" <> show encrypted)
+  debug config event
+
+readCharacteristicValue :: DBus.Client -> ObjectPath -> IO (Maybe ByteString)
+readCharacteristicValue client path = do
+  reply <-
+    DBus.call_ client $
+      (methodCall path (interfaceName_ "org.freedesktop.DBus.Properties") (memberName_ "Get"))
+        { methodCallDestination = Just (busName_ "org.bluez")
+        , methodCallBody =
+            [ toVariant ("org.bluez.GattCharacteristic1" :: String)
+            , toVariant ("Value" :: String)
+            ]
+        }
+  case methodReturnBody reply of
+    [body]
+      | Just value <- fromVariant body -> pure (variantBytes value)
+    _ -> fail "unexpected BlueZ Properties.Get Value response"
 
 handleDeviceSignal :: BluezConfig -> TQueue (Either SesameTransportError (ByteString, Bool)) -> Signal -> IO ()
 handleDeviceSignal config queue signalMessage =
@@ -410,7 +439,7 @@ writePacket timeoutSeconds client path packet =
           { methodCallDestination = Just (busName_ "org.bluez")
           , methodCallBody =
               [ toVariant (BS.unpack packet :: [Word8])
-              , toVariant (Map.singleton "type" (toVariant ("request" :: String)) :: Map String Variant)
+              , toVariant (Map.singleton "type" (toVariant ("command" :: String)) :: Map String Variant)
               ]
           }
       label = "org.bluez.GattCharacteristic1.WriteValue " <> formatObjectPath path

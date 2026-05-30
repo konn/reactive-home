@@ -74,7 +74,7 @@ login client secret = do
     Left err -> unregisterResponseWaiter client Login *> atomically (writeTVar client.cipherVar Nothing) *> Exception.throwIO err
     Right () -> waitRegisteredResponse client Login queue client.config.commandTimeoutMicros
   case response.resultCode of
-    Success -> pure (timestampLE response.responsePayload)
+    Success -> waitLoginPublishes client *> pure (timestampLE response.responsePayload)
     rc -> atomically (writeTVar client.cipherVar Nothing) *> Exception.throwIO (SesameProtocolException (OperationFailed Login rc))
 
 lock :: Sesame5Client -> Text -> IO ()
@@ -132,6 +132,24 @@ waitInitial client = do
   if publish.publishItemCode == Initial
     then pure (SessionToken publish.publishPayload)
     else waitInitial client
+
+waitLoginPublishes :: Sesame5Client -> IO ()
+waitLoginPublishes client = go False False []
+  where
+    go seenStatus seenSetting seen = do
+      if seenStatus && seenSetting
+        then atomically (mapM_ (writeTQueue client.publishQueue) (reverse seen))
+        else do
+          publish <- readTQueueOrTimeout client.publishQueue (Just client.config.commandTimeoutMicros) >>= either Exception.throwIO pure
+          let seen' = Right publish : seen
+              (seenStatus', seenSetting') = updateSeen seenStatus seenSetting publish
+          go seenStatus' seenSetting' seen'
+
+    updateSeen seenStatus seenSetting publish =
+      case publish.publishItemCode of
+        MechStatus -> (True, seenSetting)
+        MechSetting -> (seenStatus, True)
+        _ -> (seenStatus, seenSetting)
 
 receiveLoop :: Sesame5Client -> IO ()
 receiveLoop client =
