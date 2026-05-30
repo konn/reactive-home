@@ -118,7 +118,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           path: ${{env.artifact-name}}.tar.zst
-          archive: false
           retention-days: 1
       - name: List Binaries
         id: list-bins
