@@ -45,6 +45,28 @@ test_tomlParsing =
               , absent = []
               , present = []
               }
+    , testCase "parses real example TOML correctly" $
+        decodeExact (genericCodec @ESPresenseConfig) realExampleToml
+          @?= Right
+            ESPresenseConfig
+              { devices = ["watch:"]
+              , rooms =
+                  [ ESPRoom
+                      { name = "room"
+                      , max_distance = 8
+                      , skip_distance = 0.5
+                      , skip_ms = 5000
+                      }
+                  , ESPRoom
+                      { name = "bedroom"
+                      , max_distance = 8
+                      , skip_distance = 0.5
+                      , skip_ms = 5000
+                      }
+                  ]
+              , absent = []
+              , present = []
+              }
     , testCase "does not hide invalid present ESPRoom values behind defaults" $
         case decodeExact (genericCodec @ESPresenseConfig) invalidRoomToml of
           Left _ -> pure ()
@@ -80,4 +102,22 @@ invalidRoomToml =
     , "[[rooms]]"
     , "name = \"office\""
     , "max_distance = \"far\""
+    ]
+
+realExampleToml :: T.Text
+realExampleToml =
+  T.unlines
+    [ "devices = [\"watch:\"]"
+    , ""
+    , "[[espresense.rooms]]"
+    , "name = \"room\""
+    , "max_distance = 8"
+    , "skip_distance = 0.5"
+    , "skip_ms = 5000"
+    , ""
+    , "[[espresense.rooms]]"
+    , "name = \"bedroom\""
+    , "max_distance = 8"
+    , "skip_distance = 0.5"
+    , "skip_ms = 5000"
     ]
