@@ -175,7 +175,7 @@ bulkMackerelS ::
   , ToMackerelMetrics a
   , Console :> es
   ) =>
-  ClSF (Eff es) (IOClock (Eff es) (Millisecond 1500)) [a] ()
+  ClSF (Eff es) (IOClock (Eff es) (Millisecond 1_000)) [a] ()
 bulkMackerelS = proc stts -> do
   mcfg <- constMCl (asks @HomeEnv (.mackerel)) -< ()
   case mcfg of
