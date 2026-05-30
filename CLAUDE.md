@@ -64,6 +64,7 @@ cabal test hasquitto-core-integration --test-options '--mqtt-host localhost --mq
   the build — drop deps you stop using.
 - CI (`.github/workflows/haskell.yml`): build, all test suites, `fourmolu --check`, and a
   cabal validation (`ci/scripts/cabal-check-packages.sh`).
+- Commit must follow Conventional Commits (https://www.conventionalcommits.org) style and you must make the coauthorship clear by appending `Co-authored-by` trailer. Also, include a brief summary of changes in the message body.
 
 ## Architecture
 
