@@ -46,7 +46,6 @@ import Home.Reactive.Metrics.Mackerel
 import Home.Reactive.Orphans ()
 import Home.Reactive.Sesame5
 import Options.Applicative qualified as Opts
-import System.IO (BufferMode (..), hSetBuffering, stdout)
 import Toml hiding (first, map)
 
 data Config = Config
@@ -185,7 +184,6 @@ bulkMackerelS = proc stts -> do
 
 defaultMain :: IO ()
 defaultMain = do
-  hSetBuffering stdout LineBuffering
   CLIOpts {..} <- Opts.execParser cliOptsP
   config <- either (throwIO . userError . show) pure =<< decodeFileExact configCodec configFile
   defaultMainWith config
