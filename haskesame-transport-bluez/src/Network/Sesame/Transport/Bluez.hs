@@ -63,19 +63,19 @@ setupBluezTransport client config = do
   resolved <- resolveBluezConfig client config
   queue <- newTQueueIO
   state <- newTVarIO emptyReassembly
-  lastMessage <- newTVarIO Nothing
+  recentMessages <- newTVarIO []
   device <- requireField "devicePath" resolved.devicePath
   writeChar <- requireField "writeCharacteristicPath" resolved.writeCharacteristicPath
   notifyChar <- requireField "notifyCharacteristicPath" resolved.notifyCharacteristicPath
   Exception.onException
     do
       debug config ("resolved device=" <> formatObjectPath device <> ", write=" <> formatObjectPath writeChar <> ", notify=" <> formatObjectPath notifyChar)
-      _ <- DBus.addMatch client (propertiesChangedRule notifyChar) (handleSignal config queue state lastMessage)
+      _ <- DBus.addMatch client (propertiesChangedRule notifyChar) (handleSignal config queue state recentMessages)
       _ <- DBus.addMatch client (propertiesChangedRule device) (handleDeviceSignal config queue)
       debug config "starting BlueZ notifications"
       callNoBody config.discoveryTimeoutSeconds client notifyChar "org.bluez.GattCharacteristic1" "StartNotify"
       debug config "BlueZ notifications started"
-      snapshotNotifyValue client config queue state lastMessage notifyChar
+      snapshotNotifyValue client config queue state recentMessages notifyChar
       pure
         SesameTransport
           { sendBle = \encrypted bytes -> sendFragments config client writeChar encrypted bytes
@@ -357,8 +357,8 @@ propertiesChangedRule path =
     , DBus.matchMember = Just (memberName_ "PropertiesChanged")
     }
 
-handleSignal :: BluezConfig -> TQueue (Either SesameTransportError (ByteString, Bool)) -> TVar Reassembly -> TVar (Maybe (ByteString, Bool)) -> Signal -> IO ()
-handleSignal config queue state lastMessage signalMessage =
+handleSignal :: BluezConfig -> TQueue (Either SesameTransportError (ByteString, Bool)) -> TVar Reassembly -> TVar [(ByteString, Bool)] -> Signal -> IO ()
+handleSignal config queue state recentMessages signalMessage =
   case signalBody signalMessage of
     [ifaceVar, changedVar, _invalidatedVar]
       | Just (iface :: String) <- fromVariant ifaceVar
@@ -366,24 +366,27 @@ handleSignal config queue state lastMessage signalMessage =
       , Just (changed :: Map String Variant) <- fromVariant changedVar
       , Just valueVar <- Map.lookup "Value" changed
       , Just bytes <- variantBytes valueVar ->
-          processNotificationBytes config queue state lastMessage "notification" bytes
+          processNotificationBytes config queue state recentMessages "notification" bytes
       | Just (iface :: String) <- fromVariant ifaceVar
       , iface == "org.bluez.GattCharacteristic1"
       , Just (changed :: Map String Variant) <- fromVariant changedVar ->
           debug config ("GattCharacteristic1 change without decodable Value: keys=" <> show (Map.keys changed))
     _ -> pure ()
 
-snapshotNotifyValue :: DBus.Client -> BluezConfig -> TQueue (Either SesameTransportError (ByteString, Bool)) -> TVar Reassembly -> TVar (Maybe (ByteString, Bool)) -> ObjectPath -> IO ()
-snapshotNotifyValue client config queue state lastMessage notifyChar = do
+snapshotNotifyValue :: DBus.Client -> BluezConfig -> TQueue (Either SesameTransportError (ByteString, Bool)) -> TVar Reassembly -> TVar [(ByteString, Bool)] -> ObjectPath -> IO ()
+snapshotNotifyValue client config queue state recentMessages notifyChar = do
   result <- Exception.tryAny (readCharacteristicValue client notifyChar)
   case result of
     Right (Just bytes)
-      | not (BS.null bytes) -> processNotificationBytes config queue state lastMessage "notification snapshot" bytes
+      | not (BS.null bytes) -> processNotificationBytes config queue state recentMessages "notification snapshot" bytes
     Right _ -> pure ()
     Left err -> debug config ("failed to snapshot BlueZ notification value: " <> show err)
 
-processNotificationBytes :: BluezConfig -> TQueue (Either SesameTransportError (ByteString, Bool)) -> TVar Reassembly -> TVar (Maybe (ByteString, Bool)) -> String -> ByteString -> IO ()
-processNotificationBytes config queue state lastMessage label bytes = do
+recentMessageLimit :: Int
+recentMessageLimit = 16
+
+processNotificationBytes :: BluezConfig -> TQueue (Either SesameTransportError (ByteString, Bool)) -> TVar Reassembly -> TVar [(ByteString, Bool)] -> String -> ByteString -> IO ()
+processNotificationBytes config queue state recentMessages label bytes = do
   event <-
     atomically do
       current <- readTVar state
@@ -392,11 +395,11 @@ processNotificationBytes config queue state lastMessage label bytes = do
         Right (next, Nothing) -> writeTVar state next *> pure (label <> " fragment received: bytes=" <> show (BS.length bytes))
         Right (next, Just message@(payload, encrypted)) -> do
           writeTVar state next
-          previous <- readTVar lastMessage
-          if previous == Just message
+          recent <- readTVar recentMessages
+          if message `elem` recent
             then pure (label <> " duplicate message ignored: payload_bytes=" <> show (BS.length payload) <> ", encrypted=" <> show encrypted)
             else
-              writeTVar lastMessage (Just message)
+              writeTVar recentMessages (take recentMessageLimit (message : recent))
                 *> writeTQueue queue (Right message)
                 *> pure (label <> " message received: payload_bytes=" <> show (BS.length payload) <> ", encrypted=" <> show encrypted)
   debug config event
