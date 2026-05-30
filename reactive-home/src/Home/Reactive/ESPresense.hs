@@ -34,6 +34,7 @@ import FRP.Rhine
 import GHC.Generics (Generic)
 import Home.Reactive.App.Types (ParseResult (..))
 import Home.Reactive.MQTT
+import Home.Reactive.Metrics.Mackerel
 import Network.Mqtt.Types.Topic (stripPrefix)
 import Toml hiding (first, map)
 
@@ -155,3 +156,17 @@ aggregateESPStatus = feedback HM.empty $ arr \(!mest, !prev) ->
               }
           !new = HM.insert (stt.sensor, stt.id) ssst prev
        in (new, new)
+
+instance ToMackerelMetrics ESPStatus where
+  toMetrics stt =
+    [ MackerelEntry
+        { name = "espresense.distance." <> stt.sensor
+        , time = stt.timestamp
+        , value = A.Number (realToFrac stt.distance)
+        }
+    , MackerelEntry
+        { name = "espresense.variance." <> stt.sensor
+        , time = stt.timestamp
+        , value = A.Number (realToFrac stt.var)
+        }
+    ]

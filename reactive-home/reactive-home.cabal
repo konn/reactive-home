@@ -61,6 +61,7 @@ library
     Home.Reactive.App.Types
     Home.Reactive.ESPresense
     Home.Reactive.MQTT
+    Home.Reactive.Metrics.Mackerel
     Home.Reactive.Orphans
     Home.Reactive.Sesame5
 
@@ -69,6 +70,7 @@ library
   build-depends:
     aeson,
     bytestring,
+    dlist,
     effectful,
     generic-lens,
     hashable,

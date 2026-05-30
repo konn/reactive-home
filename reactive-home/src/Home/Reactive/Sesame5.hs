@@ -44,6 +44,7 @@ import FRP.Rhine
 import GHC.Generics (Generic)
 import Home.Reactive.App.Types (ParseResult (..))
 import Home.Reactive.MQTT
+import Home.Reactive.Metrics.Mackerel
 import Network.Mqtt.Types.Topic (stripPrefix)
 import Toml hiding (map)
 
@@ -194,3 +195,34 @@ aggregateSesameStatus =
           Nothing -> prev
           Just stt -> HM.insert stt.name stt prev
      in (new, new)
+
+instance ToMackerelMetrics SesameStatus where
+  toMetrics stt =
+    [ MackerelEntry
+        { name = "sesame.position." <> stt.name
+        , time = stt.lastUpdated
+        , value = A.toJSON stt.position
+        }
+    , MackerelEntry
+        { name = "sesame.lockCurrentState." <> stt.name
+        , time = stt.lastUpdated
+        , value = case stt.lockCurrentState of
+            LOCKED -> A.Number 1
+            UNLOCKED -> A.Number 0
+        }
+    , MackerelEntry
+        { name = "sesame.batteryVoltage." <> stt.name
+        , time = stt.lastUpdated
+        , value = A.toJSON stt.batteryVoltage
+        }
+    , MackerelEntry
+        { name = "sesame.batteryLevel." <> stt.name
+        , time = stt.lastUpdated
+        , value = A.toJSON stt.batteryLevel
+        }
+    , MackerelEntry
+        { name = "sesame.statusLowBattery." <> stt.name
+        , time = stt.lastUpdated
+        , value = if stt.statusLowBattery then A.Number 1 else A.Number 0
+        }
+    ]
