@@ -57,8 +57,12 @@ library
   -- cabal-gild: discover src --exclude=src/**/Internal.hs --exclude=src/**/Internal/**/*.hs
   exposed-modules:
     Home.Reactive
+    Home.Reactive.App
+    Home.Reactive.App.Types
+    Home.Reactive.ESPresense
     Home.Reactive.MQTT
     Home.Reactive.Orphans
+    Home.Reactive.Sesame5
 
   -- cabal-gild: discover src --include=src/**/Internal.hs --include=src/**/Internal/**/*.hs
   other-modules:
@@ -67,23 +71,21 @@ library
     bytestring,
     effectful,
     generic-lens,
+    hashable,
     hasquitto-auto-reconnect,
     hasquitto-core,
     hasquitto-effectful,
     lens,
     monad-schedule,
-    mtl,
-    network,
-    network-uri,
+    optparse-applicative,
     rhine,
-    stm,
-    stm-chans,
+    safe-exceptions,
     text,
     time,
+    tomland,
     transformers,
     unordered-containers,
-    uuid,
-    vector,
+    wreq-effectful,
 
 executable reactive-home
   import: defaults
@@ -97,24 +99,7 @@ executable reactive-home
     "-with-rtsopts=-N --copying-gc"
 
   build-depends:
-    aeson,
-    bytestring,
-    containers,
-    effectful,
-    generic-lens,
-    hashable,
-    hasquitto-effectful,
-    lens,
-    optparse-applicative,
-    reactive-home,
-    rhine,
-    safe-exceptions,
-    text,
-    time,
-    tomland,
-    transformers,
-    unordered-containers,
-    wreq-effectful,
+    reactive-home
 
 test-suite reactive-home-test
   import: defaults
