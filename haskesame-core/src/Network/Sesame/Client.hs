@@ -152,46 +152,60 @@ waitLoginPublishes client = go False False []
         _ -> (seenStatus, seenSetting)
 
 receiveLoop :: Sesame5Client -> IO ()
-receiveLoop client =
-  foreverReceive
+receiveLoop client = foreverReceive []
   where
-    foreverReceive = do
+    foreverReceive pendingEncrypted = do
       packet <- client.transport.receiveBle
       case packet of
         Left err -> broadcastException client (SesameTransportException err)
-        Right (bytes, encrypted) -> do
-          result <- Exception.try (decodeIncoming client bytes encrypted) :: IO (Either SesameException ())
-          case result of
-            Left err -> broadcastException client (err :: SesameException)
-            Right () -> foreverReceive
+        Right (bytes, encrypted)
+          | encrypted -> do
+              (pendingEncrypted', result) <- drainEncryptedPending client (pendingEncrypted <> [bytes])
+              case result of
+                Left err -> broadcastException client err
+                Right () -> foreverReceive pendingEncrypted'
+          | otherwise -> do
+              result <- Exception.try (decodePlaintextIncoming client bytes) :: IO (Either SesameException ())
+              case result of
+                Left err -> broadcastException client (err :: SesameException)
+                Right () -> foreverReceive pendingEncrypted
 
-decodeIncoming :: Sesame5Client -> ByteString -> Bool -> IO ()
-decodeIncoming client bytes encrypted = do
-  payload <- decryptIncoming client bytes encrypted
-  case payload of
-    Nothing -> pure ()
-    Just plaintext -> do
-      message <- either (Exception.throwIO . SesameProtocolException) pure (decodeMessage plaintext)
-      case message.opCode of
-        Response -> do
-          response <- either (Exception.throwIO . SesameProtocolException) pure (decodeResponse message.payload)
-          dispatchResponse client response
-        Publish -> do
-          publish <- either (Exception.throwIO . SesameProtocolException) pure (decodePublish message.payload)
-          atomically (writeTQueue client.publishQueue (Right publish))
-        other -> Exception.throwIO (SesameProtocolException (UnexpectedMessage ("expected response or publish, got " <> show other)))
+drainEncryptedPending :: Sesame5Client -> [ByteString] -> IO ([ByteString], Either SesameException ())
+drainEncryptedPending client = go [] False
+  where
+    go deferred progressed [] =
+      case (progressed, length deferred > encryptedReorderWindow) of
+        (True, _) -> go [] False (reverse deferred)
+        (_, True) -> pure (reverse deferred, Left (SesameCryptoException AuthenticationFailed))
+        _ -> pure (reverse deferred, Right ())
+    go deferred progressed (bytes : rest) = do
+      result <- Exception.try do
+        plaintext <- decryptEncryptedIncoming client bytes
+        decodePlaintextIncoming client plaintext
+      case result of
+        Right () -> go deferred True rest
+        Left (SesameCryptoException AuthenticationFailed) -> go (bytes : deferred) progressed rest
+        Left err -> pure (reverse deferred <> rest, Left err)
 
-decryptIncoming :: Sesame5Client -> ByteString -> Bool -> IO (Maybe ByteString)
-decryptIncoming client bytes encrypted =
-  if encrypted
-    then do
-      cipher <- atomically (readTVar client.cipherVar)
-      traverse
-        ( \activeCipher ->
-            Crypto.decrypt activeCipher bytes >>= either (Exception.throwIO . SesameCryptoException) pure
-        )
-        cipher
-    else pure (Just bytes)
+encryptedReorderWindow :: Int
+encryptedReorderWindow = 16
+
+decodePlaintextIncoming :: Sesame5Client -> ByteString -> IO ()
+decodePlaintextIncoming client plaintext = do
+  message <- either (Exception.throwIO . SesameProtocolException) pure (decodeMessage plaintext)
+  case message.opCode of
+    Response -> do
+      response <- either (Exception.throwIO . SesameProtocolException) pure (decodeResponse message.payload)
+      dispatchResponse client response
+    Publish -> do
+      publish <- either (Exception.throwIO . SesameProtocolException) pure (decodePublish message.payload)
+      atomically (writeTQueue client.publishQueue (Right publish))
+    other -> Exception.throwIO (SesameProtocolException (UnexpectedMessage ("expected response or publish, got " <> show other)))
+
+decryptEncryptedIncoming :: Sesame5Client -> ByteString -> IO ByteString
+decryptEncryptedIncoming client bytes = do
+  cipher <- atomically (readTVar client.cipherVar) >>= maybe (Exception.throwIO (SesameCryptoException AuthenticationFailed)) pure
+  Crypto.decrypt cipher bytes >>= either (Exception.throwIO . SesameCryptoException) pure
 
 registerResponseWaiter :: Sesame5Client -> ItemCode -> IO (TQueue (Either SesameException SesameResponse))
 registerResponseWaiter client item = do
