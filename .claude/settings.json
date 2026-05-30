@@ -1,7 +1,9 @@
 {
   "enabledPlugins": {
     "haskell-skill@konn-haskell-claude-tools": true,
-    "hoogle@claude-hoogle": true
+    "hoogle@claude-hoogle": true,
+    "haskell-format-skill@konn-haskell-claude-tools": false,
+    "haskell-cabal-gild-skill@konn-haskell-claude-tools": false
   },
   "hooks": {
     "PostToolUse": [
