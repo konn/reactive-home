@@ -4,7 +4,7 @@
 module Home.Reactive.ESPresenseTest (test_tomlParsing) where
 
 import Data.Text qualified as T
-import Home.Reactive.ESPresense (ESPRoom (..), ESPresenseConfig (..))
+import Home.Reactive.ESPresense (ESPSensor (..), ESPresenseConfig (..), seconds)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
 import Toml (decodeExact, genericCodec)
@@ -18,54 +18,52 @@ test_tomlParsing =
           @?= Right
             ESPresenseConfig
               { devices = []
-              , rooms =
-                  [ ESPRoom
+              , sensors =
+                  [ ESPSensor
                       { name = "office"
                       , max_distance = 16
                       , skip_distance = 0.5
                       , skip_ms = 5000
+                      , timeout = seconds 5
                       }
                   ]
-              , absent = []
-              , present = []
               }
     , testCase "keeps present ESPRoom values instead of replacing them with defaults" $
         decodeExact (genericCodec @ESPresenseConfig) explicitRoomToml
           @?= Right
             ESPresenseConfig
               { devices = []
-              , rooms =
-                  [ ESPRoom
+              , sensors =
+                  [ ESPSensor
                       { name = "office"
                       , max_distance = 3.25
                       , skip_distance = 1.25
                       , skip_ms = 1234
+                      , timeout = seconds 5
                       }
                   ]
-              , absent = []
-              , present = []
               }
     , testCase "parses real example TOML correctly" $
         decodeExact (genericCodec @ESPresenseConfig) realExampleToml
           @?= Right
             ESPresenseConfig
               { devices = ["watch:"]
-              , rooms =
-                  [ ESPRoom
+              , sensors =
+                  [ ESPSensor
                       { name = "room"
                       , max_distance = 8
                       , skip_distance = 0.5
                       , skip_ms = 5000
+                      , timeout = seconds 5
                       }
-                  , ESPRoom
+                  , ESPSensor
                       { name = "bedroom"
                       , max_distance = 8
                       , skip_distance = 0.5
                       , skip_ms = 5000
+                      , timeout = seconds 5.5
                       }
                   ]
-              , absent = []
-              , present = []
               }
     , testCase "does not hide invalid present ESPRoom values behind defaults" $
         case decodeExact (genericCodec @ESPresenseConfig) invalidRoomToml of
@@ -78,7 +76,7 @@ minimalRoomToml =
   T.unlines
     [ "devices = []"
     , ""
-    , "[[rooms]]"
+    , "[[sensors]]"
     , "name = \"office\""
     ]
 
@@ -87,7 +85,7 @@ explicitRoomToml =
   T.unlines
     [ "devices = []"
     , ""
-    , "[[rooms]]"
+    , "[[sensors]]"
     , "name = \"office\""
     , "max_distance = 3.25"
     , "skip_distance = 1.25"
@@ -99,7 +97,7 @@ invalidRoomToml =
   T.unlines
     [ "devices = []"
     , ""
-    , "[[rooms]]"
+    , "[[sensors]]"
     , "name = \"office\""
     , "max_distance = \"far\""
     ]
@@ -109,15 +107,16 @@ realExampleToml =
   T.unlines
     [ "devices = [\"watch:\"]"
     , ""
-    , "[[rooms]]"
+    , "[[sensors]]"
     , "name = \"room\""
     , "max_distance = 8"
     , "skip_distance = 0.5"
     , "skip_ms = 5000"
     , ""
-    , "[[rooms]]"
+    , "[[sensors]]"
     , "name = \"bedroom\""
     , "max_distance = 8"
     , "skip_distance = 0.5"
     , "skip_ms = 5000"
+    , "timeout = \"5.5s\""
     ]

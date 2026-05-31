@@ -193,7 +193,7 @@ initializeESPresense :: (Mqtt :> es, Reader HomeEnv :> es) => Eff es ()
 initializeESPresense = do
   cfg <- asks @HomeEnv (.espresense)
   forM_ cfg $ \espCfg ->
-    initialiseRooms espCfg.devices espCfg.rooms
+    initialiseRooms espCfg.devices espCfg.sensors
 
 defaultMainWith :: Config -> IO ()
 defaultMainWith config = do

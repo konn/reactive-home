@@ -11,9 +11,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE NoFieldSelectors #-}
 
 module Home.Reactive.ESPresense (
-  ESPRoom (..),
+  ESPSensor (..),
+  Duration (),
+  millis,
+  seconds,
+  minutes,
+  hours,
+  days,
   ESPresenseConfig (..),
   ESPSensorName,
   ESPDeviceId,
@@ -57,7 +64,7 @@ import Network.Mqtt.Types.Topic (stripPrefix)
 import Text.Read (readEither)
 import Toml hiding (first, map)
 
-data ESPRoom = ESPRoom
+data ESPSensor = ESPSensor
   { name :: !T.Text
   , max_distance :: !Float
   , skip_distance :: !Float
@@ -79,30 +86,45 @@ option def key codec =
 numberFloat :: Key -> TomlCodec Float
 numberFloat key = Toml.float key <|> Toml.dimap round fromIntegral (Toml.int key)
 
-roomCodec :: Codec ESPRoom ESPRoom
+roomCodec :: Codec ESPSensor ESPSensor
 roomCodec = do
   name <- Toml.text "name" .= (.name)
   max_distance <- option 16 "max_distance" (numberFloat "max_distance") .= (.max_distance)
   skip_distance <- option 0.5 "skip_distance" (numberFloat "skip_distance") .= (.skip_distance)
   skip_ms <- option 5000 "skip_ms" (Toml.int "skip_ms") .= (.skip_ms)
   timeout <- option (Duration 5) "timeout" (Toml.textBy formatDuration parseDuration "timeout") .= (.timeout)
-  pure ESPRoom {..}
+  pure ESPSensor {..}
 
-instance HasItemCodec ESPRoom where
+instance HasItemCodec ESPSensor where
   hasItemCodec = Right roomCodec
 
-instance HasCodec ESPRoom where
+instance HasCodec ESPSensor where
   hasCodec = table roomCodec
 
 data ESPresenseConfig = ESPresenseConfig
   { devices :: ![T.Text]
-  , rooms :: ![ESPRoom]
+  , sensors :: ![ESPSensor]
   }
   deriving (Show, Eq, Ord, Generic)
   deriving (HasCodec, HasItemCodec) via TomlTable ESPresenseConfig
 
 newtype Duration = Duration {seconds :: Diff UTCTime}
   deriving (Eq, Ord, Generic)
+
+millis :: Double -> Duration
+millis ms = Duration (ms / 1000)
+
+seconds :: Double -> Duration
+seconds = Duration
+
+minutes :: Double -> Duration
+minutes m = Duration (m * 60)
+
+hours :: Double -> Duration
+hours h = Duration (h * 3600)
+
+days :: Double -> Duration
+days d = Duration (d * 86400)
 
 instance Show Duration where
   show (Duration secs) = show secs ++ "s"
@@ -113,7 +135,7 @@ instance HasCodec Duration where
 initialiseRooms ::
   (Mqtt :> es) =>
   [ESPDeviceId] ->
-  [ESPRoom] ->
+  [ESPSensor] ->
   Eff es ()
 initialiseRooms sensors = mapM_ (initialiseRoom sensors)
 
@@ -125,7 +147,7 @@ pub topic payload = do
 initialiseRoom ::
   (Mqtt :> es) =>
   [ESPDeviceId] ->
-  ESPRoom ->
+  ESPSensor ->
   Eff es ()
 initialiseRoom sensors room = do
   let setTopic k = "espresense" <> "rooms" <> Topic room.name <> Topic k <> "set"
@@ -146,7 +168,7 @@ formatDuration (Duration secs)
   | otherwise = T.pack (show $ secs * 1000) <> "ms"
 
 parseDuration :: T.Text -> Either T.Text Duration
-parseDuration inp = case T.span C.isDigit inp of
+parseDuration inp = case T.span (\c -> C.isDigit c || c == '.' || c == '_') inp of
   ("", _) -> Left $ "Invalid duration format: empty string"
   (numPart, T.strip -> rest) ->
     case readEither (T.unpack numPart) of
@@ -168,7 +190,7 @@ espresenseTopicFilters ESPresenseConfig {..} =
   | device <- devices
   ]
     <> [ "espresense" <> "rooms" <> TopicFilter room.name <> key
-       | room <- rooms
+       | room <- sensors
        , key <- ["status", "telemetry"]
        ]
 
@@ -261,7 +283,7 @@ numOccupants = HM.size
 
 occupancyListS ::
   (Clock (Eff es) cl, Time cl ~ UTCTime) =>
-  ESPRoom ->
+  ESPSensor ->
   ClSF (Eff es) cl (Maybe ESPStatus) OccupancyList
 occupancyListS room = feedback HM.empty $ proc (event, residents) -> do
   TimeInfo {..} <- timeInfo -< ()
