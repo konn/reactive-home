@@ -70,6 +70,7 @@ data ESPSensor = ESPSensor
   , skip_distance :: !Float
   , skip_ms :: !Int
   , timeout :: !Duration
+  , window :: Maybe Int
   }
   deriving (Show, Eq, Ord, Generic)
 
@@ -93,6 +94,7 @@ roomCodec = do
   skip_distance <- option 0.5 "skip_distance" (numberFloat "skip_distance") .= (.skip_distance)
   skip_ms <- option 5000 "skip_ms" (Toml.int "skip_ms") .= (.skip_ms)
   timeout <- option (Duration 5) "timeout" (Toml.textBy formatDuration parseDuration "timeout") .= (.timeout)
+  window <- Toml.dioptional (Toml.int "window") .= (.window)
   pure ESPSensor {..}
 
 instance HasItemCodec ESPSensor where
