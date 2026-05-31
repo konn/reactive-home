@@ -90,6 +90,7 @@ library
     tomland,
     transformers,
     unordered-containers,
+    validation-selective,
     wreq-effectful,
 
 executable reactive-home
@@ -128,3 +129,4 @@ test-suite reactive-home-test
     tasty-hunit,
     text,
     tomland,
+    unordered-containers,

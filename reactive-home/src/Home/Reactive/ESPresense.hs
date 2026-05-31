@@ -22,8 +22,11 @@ module Home.Reactive.ESPresense (
   hours,
   days,
   ESPresenseConfig (..),
+  Room (..),
+  SensorCondition (..),
   ESPSensorName,
   ESPDeviceId,
+  espresenseConfigCodec,
   RawESPStatus (..),
   ESPStatus (..),
   ESPSensorState (..),
@@ -40,7 +43,7 @@ module Home.Reactive.ESPresense (
   numOccupants,
 ) where
 
-import Control.Applicative ((<|>))
+import Control.Applicative (empty, (<|>))
 import Control.Lens ((&), (.~))
 import Control.Monad (unless, void)
 import Data.Aeson (FromJSON, ToJSON)
@@ -48,9 +51,11 @@ import Data.Aeson qualified as A
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as LBS
 import Data.Char qualified as C
+import Data.Foldable (find)
 import Data.Generics.Labels ()
 import Data.HashMap.Strict (HashMap)
 import Data.HashMap.Strict qualified as HM
+import Data.List ((\\))
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Effectful
@@ -63,6 +68,7 @@ import Home.Reactive.Metrics.Mackerel
 import Network.Mqtt.Types.Topic (stripPrefix)
 import Text.Read (readEither)
 import Toml hiding (first, map)
+import Validation (Validation (..))
 
 data ESPSensor = ESPSensor
   { name :: !T.Text
@@ -106,9 +112,117 @@ instance HasCodec ESPSensor where
 data ESPresenseConfig = ESPresenseConfig
   { devices :: ![T.Text]
   , sensors :: ![ESPSensor]
+  , rooms :: !(HashMap T.Text Room)
   }
   deriving (Show, Eq, Ord, Generic)
-  deriving (HasCodec, HasItemCodec) via TomlTable ESPresenseConfig
+
+instance HasCodec ESPresenseConfig where
+  hasCodec = Toml.table espresenseConfigCodec
+
+instance HasItemCodec ESPresenseConfig where
+  hasItemCodec = Right espresenseConfigCodec
+
+data SensorCondition = SensorCondition
+  { name :: !T.Text
+  , distance :: !Float
+  }
+  deriving (Show, Eq, Ord, Generic)
+
+sensorConditionCodec :: TomlCodec SensorCondition
+sensorConditionCodec = do
+  name <- Toml.text "name" .= (.name)
+  distance <- numberFloat "distance" .= (.distance)
+  pure SensorCondition {..}
+
+data Room = Room
+  { devices :: ![T.Text]
+  , leave :: ![SensorCondition]
+  , entry :: ![SensorCondition]
+  }
+  deriving (Show, Eq, Ord, Generic)
+
+conditionsCodec :: TomlCodec [SensorCondition]
+conditionsCodec = Toml.list sensorConditionCodec "conditions"
+
+roomRuleCodec :: TomlCodec Room
+roomRuleCodec = do
+  devices <- Toml.arrayOf Toml._Text "devices" .= (.devices)
+  leave <- Toml.table conditionsCodec "leave" .= (.leave)
+  entry <- entryCodec .= (.entry)
+  pure Room {..}
+  where
+    entryCodec :: TomlCodec [SensorCondition]
+    entryCodec =
+      Codec
+        { codecRead =
+            codecRead returnCodec
+              <!> codecRead legacyEntryCodec
+        , codecWrite = \conditions ->
+            conditions
+              <$ ( codecWrite returnCodec conditions
+                     *> codecWrite legacyEntryCodec conditions
+                 )
+        }
+    returnCodec = Toml.table conditionsCodec "return"
+    legacyEntryCodec = Toml.table conditionsCodec "entry"
+
+espresenseConfigCodec :: TomlCodec ESPresenseConfig
+espresenseConfigCodec = validateConfigCodec baseCodec
+  where
+    baseCodec :: TomlCodec ESPresenseConfig
+    baseCodec = do
+      devices <- Toml.arrayOf Toml._Text "devices" .= (.devices)
+      sensors <- Toml.list roomCodec "sensors" .= (.sensors)
+      rooms <- roomsCodec .= (.rooms)
+      pure ESPresenseConfig {..}
+
+    roomsCodec :: TomlCodec (HashMap T.Text Room)
+    roomsCodec =
+      Codec
+        { codecRead = \toml ->
+            HM.fromList
+              <$> traverse
+                readRoom
+                [ (roomName, roomToml)
+                | (Toml.Piece "rooms" :|| [Toml.Piece "rooms", Toml.Piece roomName], roomToml) <- Toml.toList (toml.tomlTables)
+                ]
+        , codecWrite = \rooms ->
+            TomlState $ \toml ->
+              ( Just rooms
+              , foldl' insertRoom toml (HM.toList rooms)
+              )
+        }
+
+    readRoom :: (T.Text, TOML) -> Validation [TomlDecodeError] (T.Text, Room)
+    readRoom (roomName, roomToml) =
+      (\room -> (roomName, room)) <$> codecRead roomRuleCodec roomToml
+
+    insertRoom :: TOML -> (T.Text, Room) -> TOML
+    insertRoom toml (roomName, room) =
+      Toml.insertTable
+        (Toml.Piece "rooms" :|| [Toml.Piece roomName])
+        (Toml.execTomlCodec roomRuleCodec room)
+        toml
+
+validateConfigCodec :: TomlCodec ESPresenseConfig -> TomlCodec ESPresenseConfig
+validateConfigCodec codec =
+  Codec
+    { codecRead = \toml -> do
+        case codecRead codec toml of
+          Failure errs -> Failure errs
+          Success cfg ->
+            case firstInvalidRoomDevices cfg of
+              Nothing -> pure cfg
+              Just _ -> empty
+    , codecWrite = codecWrite codec
+    }
+
+firstInvalidRoomDevices :: ESPresenseConfig -> Maybe (T.Text, [T.Text])
+firstInvalidRoomDevices cfg =
+  find (not . null . snd) $
+    [ (roomName, room.devices \\ cfg.devices)
+    | (roomName, room) <- HM.toList cfg.rooms
+    ]
 
 newtype Duration = Duration {seconds :: Diff UTCTime}
   deriving (Eq, Ord, Generic)
