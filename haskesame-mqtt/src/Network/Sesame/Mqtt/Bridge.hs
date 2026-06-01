@@ -9,7 +9,7 @@ module Network.Sesame.Mqtt.Bridge (
 ) where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (async, forConcurrently_, race_, withAsync)
+import Control.Concurrent.Async (async, forConcurrently_, race, race_, withAsync)
 import Control.Concurrent.MVar (MVar, newMVar, putMVar, tryTakeMVar)
 import Control.Concurrent.STM (STM, TVar, atomically, check, modifyTVar', newTVarIO, orElse, readTVar, readTVarIO, registerDelay)
 import Control.Exception.Safe qualified as Exception
@@ -56,7 +56,12 @@ type StatusVersions = TVar (Map Text Int)
 
 type StatusSnapshots = TVar (Map Text StatusPayload)
 
-type PendingCommands = TVar (Map Text LockCommand)
+type PendingCommands = TVar (Map Text PendingCommand)
+
+data PendingCommand = PendingCommand
+  { pendingLockCommand :: !LockCommand
+  , pendingForceSend :: !Bool
+  }
 
 superviseDevice :: Mqtt.AutoClient -> BridgeConfig -> DeviceMap -> CommandLocks -> StatusVersions -> StatusSnapshots -> PendingCommands -> BridgeDevice -> IO ()
 superviseDevice mqtt config deviceMap commandLocks statusVersions statusSnapshots pendingCommands device =
@@ -113,25 +118,25 @@ consumeCommands mqtt config devices commandLocks statusVersions statusSnapshots 
           Just Nothing ->
             if shouldKeepDisconnectedCommand message.qos
               then do
-                atomically (modifyTVar' pendingCommands (Map.insert (deviceKey uuid) command))
+                atomically (modifyTVar' pendingCommands (Map.insert (deviceKey uuid) (PendingCommand command True)))
                 debug config ("queued disconnected command for " <> UUID.toString uuid <> ": command=" <> show command <> ", qos=" <> show message.qos)
               else debug config ("ignoring QoS0 command while Sesame device is disconnected: " <> UUID.toString uuid)
-          Just (Just connected) -> startCommand config devices commandLocks statusVersions statusSnapshots pendingCommands uuid connected command
+          Just (Just connected) -> startCommand config devices commandLocks statusVersions statusSnapshots pendingCommands uuid connected command False
 
-startCommand :: BridgeConfig -> DeviceMap -> CommandLocks -> StatusVersions -> StatusSnapshots -> PendingCommands -> UUID -> ConnectedBridgeDevice -> LockCommand -> IO ()
-startCommand config devices commandLocks statusVersions statusSnapshots pendingCommands uuid connected command =
+startCommand :: BridgeConfig -> DeviceMap -> CommandLocks -> StatusVersions -> StatusSnapshots -> PendingCommands -> UUID -> ConnectedBridgeDevice -> LockCommand -> Bool -> IO ()
+startCommand config devices commandLocks statusVersions statusSnapshots pendingCommands uuid connected command forceSend =
   case Map.lookup (deviceKey uuid) commandLocks of
     Nothing -> do
-      _ <- async (commandWorker config devices statusVersions statusSnapshots pendingCommands Nothing uuid connected command)
+      _ <- async (commandWorker config devices statusVersions statusSnapshots pendingCommands Nothing uuid connected (PendingCommand command forceSend))
       pure ()
     Just commandLock ->
       tryTakeMVar commandLock >>= \case
-        Nothing -> queuePendingCommand config pendingCommands uuid command "command already in progress"
+        Nothing -> queuePendingCommand config pendingCommands uuid command False "command already in progress"
         Just () -> do
-          _ <- async (commandWorker config devices statusVersions statusSnapshots pendingCommands (Just commandLock) uuid connected command)
+          _ <- async (commandWorker config devices statusVersions statusSnapshots pendingCommands (Just commandLock) uuid connected (PendingCommand command forceSend))
           pure ()
 
-commandWorker :: BridgeConfig -> DeviceMap -> StatusVersions -> StatusSnapshots -> PendingCommands -> Maybe (MVar ()) -> UUID -> ConnectedBridgeDevice -> LockCommand -> IO ()
+commandWorker :: BridgeConfig -> DeviceMap -> StatusVersions -> StatusSnapshots -> PendingCommands -> Maybe (MVar ()) -> UUID -> ConnectedBridgeDevice -> PendingCommand -> IO ()
 commandWorker config devices statusVersions statusSnapshots pendingCommands commandLock uuid connected command = do
   result <- Exception.tryAny (drain command)
   case commandLock of
@@ -149,31 +154,42 @@ commandWorker config devices statusVersions statusSnapshots pendingCommands comm
           takePendingCommand pendingCommands uuid >>= \case
             Nothing -> pure True
             Just pendingCommand -> do
-              debug config ("running pending command for " <> UUID.toString uuid <> ": command=" <> show pendingCommand)
+              debug config ("running pending command for " <> UUID.toString uuid <> ": command=" <> show pendingCommand.pendingLockCommand <> ", force_send=" <> show pendingCommand.pendingForceSend)
               drain pendingCommand
         else pure False
 
-executeCommandUnlocked :: BridgeConfig -> DeviceMap -> StatusVersions -> StatusSnapshots -> PendingCommands -> UUID -> ConnectedBridgeDevice -> LockCommand -> IO Bool
+executeCommandUnlocked :: BridgeConfig -> DeviceMap -> StatusVersions -> StatusSnapshots -> PendingCommands -> UUID -> ConnectedBridgeDevice -> PendingCommand -> IO Bool
 executeCommandUnlocked config devices statusVersions statusSnapshots pendingCommands uuid connected command = do
   readStatusSnapshot statusSnapshots uuid >>= \case
     Just status
-      | commandSatisfied command status ->
-          debug config ("skipping command already satisfied for " <> UUID.toString uuid <> ": command=" <> show command <> ", status=" <> show status) *> pure True
+      | not command.pendingForceSend && commandSatisfied command.pendingLockCommand status ->
+          debug config ("skipping command already satisfied for " <> UUID.toString uuid <> ": command=" <> show command.pendingLockCommand <> ", status=" <> show status) *> pure True
     _ -> do
       beforeStatusVersion <- readStatusVersion statusVersions uuid
-      result <- Exception.tryAny case command of
-        CommandLock -> debug config ("locking " <> UUID.toString uuid) *> Sesame.lock connected.sesameClient config.historyName
-        CommandUnlock -> debug config ("unlocking " <> UUID.toString uuid) *> Sesame.unlock connected.sesameClient config.historyName
+      result <- Exception.tryAny (sendCommandAndWaitForStatus config statusVersions statusSnapshots uuid connected command.pendingLockCommand beforeStatusVersion)
       case result of
-        Right () -> do
-          statusSatisfied <- waitAfterCommand config statusVersions statusSnapshots uuid command beforeStatusVersion
-          if statusSatisfied
-            then pure True
-            else requeueFailedCommand config devices pendingCommands uuid connected command "post-command status timeout" *> pure False
+        Right True -> pure True
+        Right False -> requeueFailedCommand config devices pendingCommands uuid connected command.pendingLockCommand "post-command status timeout" *> pure False
         Left err -> do
           debug config ("command failed for " <> UUID.toString uuid <> ": " <> show err)
-          requeueFailedCommand config devices pendingCommands uuid connected command "command failure"
+          requeueFailedCommand config devices pendingCommands uuid connected command.pendingLockCommand "command failure"
           pure False
+
+sendCommandAndWaitForStatus :: BridgeConfig -> StatusVersions -> StatusSnapshots -> UUID -> ConnectedBridgeDevice -> LockCommand -> Int -> IO Bool
+sendCommandAndWaitForStatus config statusVersions statusSnapshots uuid connected command beforeStatusVersion = do
+  let sendAction = case command of
+        CommandLock -> debug config ("locking " <> UUID.toString uuid) *> Sesame.lock connected.sesameClient config.historyName
+        CommandUnlock -> debug config ("unlocking " <> UUID.toString uuid) *> Sesame.unlock connected.sesameClient config.historyName
+      statusAction = waitForCommandStatus statusVersions statusSnapshots uuid command beforeStatusVersion commandStatusWaitMicros
+  race sendAction statusAction >>= \case
+    Left () -> waitAfterCommand config statusVersions statusSnapshots uuid command beforeStatusVersion
+    Right True -> do
+      debug config ("post-command Sesame status satisfied before command response for " <> UUID.toString uuid <> ": command=" <> show command)
+      threadDelay commandSettleMicros
+      pure True
+    Right False -> do
+      debug config ("timed out waiting for post-command Sesame status before command response from " <> UUID.toString uuid <> ": command=" <> show command)
+      pure False
 
 runPendingCommand :: BridgeConfig -> DeviceMap -> CommandLocks -> StatusVersions -> StatusSnapshots -> PendingCommands -> UUID -> ConnectedBridgeDevice -> IO ()
 runPendingCommand config devices commandLocks statusVersions statusSnapshots pendingCommands uuid connected = do
@@ -196,19 +212,19 @@ runPendingCommand config devices commandLocks statusVersions statusSnapshots pen
   case pending of
     Nothing -> pure ()
     Just command -> do
-      debug config ("running queued command for " <> UUID.toString uuid <> ": command=" <> show command)
-      startCommand config devices commandLocks statusVersions statusSnapshots pendingCommands uuid connected command
+      debug config ("running queued command for " <> UUID.toString uuid <> ": command=" <> show command.pendingLockCommand <> ", force_send=" <> show command.pendingForceSend)
+      startCommand config devices commandLocks statusVersions statusSnapshots pendingCommands uuid connected command.pendingLockCommand command.pendingForceSend
 
 hasPendingCommand :: PendingCommands -> UUID -> IO Bool
 hasPendingCommand pendingCommands uuid =
   Map.member (deviceKey uuid) <$> readTVarIO pendingCommands
 
-queuePendingCommand :: BridgeConfig -> PendingCommands -> UUID -> LockCommand -> String -> IO ()
-queuePendingCommand config pendingCommands uuid command reason = do
-  atomically (modifyTVar' pendingCommands (Map.insert (deviceKey uuid) command))
-  debug config ("queued latest command because " <> reason <> " for " <> UUID.toString uuid <> ": command=" <> show command)
+queuePendingCommand :: BridgeConfig -> PendingCommands -> UUID -> LockCommand -> Bool -> String -> IO ()
+queuePendingCommand config pendingCommands uuid command forceSend reason = do
+  atomically (modifyTVar' pendingCommands (Map.insert (deviceKey uuid) (PendingCommand command forceSend)))
+  debug config ("queued latest command because " <> reason <> " for " <> UUID.toString uuid <> ": command=" <> show command <> ", force_send=" <> show forceSend)
 
-takePendingCommand :: PendingCommands -> UUID -> IO (Maybe LockCommand)
+takePendingCommand :: PendingCommands -> UUID -> IO (Maybe PendingCommand)
 takePendingCommand pendingCommands uuid =
   atomically do
     let key = deviceKey uuid
@@ -226,7 +242,7 @@ restartCommandWorkerIfPending config devices statusVersions statusSnapshots pend
         takePendingCommand pendingCommands uuid >>= \case
           Nothing -> putMVar commandLock ()
           Just command -> do
-            debug config ("restarting command worker for pending command " <> UUID.toString uuid <> ": command=" <> show command)
+            debug config ("restarting command worker for pending command " <> UUID.toString uuid <> ": command=" <> show command.pendingLockCommand <> ", force_send=" <> show command.pendingForceSend)
             _ <- async (commandWorker config devices statusVersions statusSnapshots pendingCommands (Just commandLock) uuid connected command)
             pure ()
 
@@ -239,7 +255,7 @@ requeueFailedCommand config devices pendingCommands uuid connected command reaso
       requeued <-
         if pending
           then pure False
-          else modifyTVar' pendingCommands (Map.insert key command) *> pure True
+          else modifyTVar' pendingCommands (Map.insert key (PendingCommand command True)) *> pure True
       STMMap.insert Nothing key devices
       pure requeued
   if requeued
