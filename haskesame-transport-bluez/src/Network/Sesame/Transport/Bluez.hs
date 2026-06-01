@@ -197,7 +197,19 @@ needsAdvertisementRefresh config device objects =
   isNothing config.manufacturerData && isNothing (findAdvertisementData device objects)
 
 connectDevice :: DBus.Client -> BluezConfig -> ObjectPath -> ManagedObjects -> IO ManagedObjects
-connectDevice client config device objects = do
+connectDevice client config device objects
+  | isDeviceConnected device objects && areDeviceServicesResolved device objects = do
+      debug config ("reusing connected BlueZ device session " <> formatObjectPath device)
+      pure objects
+  | isDeviceConnected device objects = do
+      debug config ("BlueZ device session already connected; waiting for services " <> formatObjectPath device)
+      waitForServicesResolved client config.discoveryTimeoutSeconds device `Exception.catchAny` \err -> do
+        debug config ("connected BlueZ device session is not usable; reconnecting " <> formatObjectPath device <> ": " <> show err)
+        reconnectDevice client config device objects
+  | otherwise = reconnectDevice client config device objects
+
+reconnectDevice :: DBus.Client -> BluezConfig -> ObjectPath -> ManagedObjects -> IO ManagedObjects
+reconnectDevice client config device objects = do
   resetStaleDeviceConnection client config device objects
   debug config ("connecting BlueZ device " <> formatObjectPath device)
   connectResult <- Exception.tryAny (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Connect")
