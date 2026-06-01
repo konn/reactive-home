@@ -387,6 +387,11 @@ handleSignal config queue state recentMessages signalMessage =
           processNotificationBytes config queue state recentMessages "notification" bytes
       | Just (iface :: String) <- fromVariant ifaceVar
       , iface == "org.bluez.GattCharacteristic1"
+      , Just (changed :: Map String Variant) <- fromVariant changedVar
+      , Map.keys changed == ["Notifying"] ->
+          pure ()
+      | Just (iface :: String) <- fromVariant ifaceVar
+      , iface == "org.bluez.GattCharacteristic1"
       , Just (changed :: Map String Variant) <- fromVariant changedVar ->
           debug config ("GattCharacteristic1 change without decodable Value: keys=" <> show (Map.keys changed))
     _ -> pure ()
