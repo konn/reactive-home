@@ -198,11 +198,15 @@ connectDevice client config device objects = do
     Right () -> pure ()
     Left err
       | isBluezConnectInProgress err -> debug config ("BlueZ connect already in progress " <> formatObjectPath device)
+      | isBluezConnectTimedOut err -> debug config ("BlueZ connect call timed out; waiting for pending connection " <> formatObjectPath device)
       | otherwise -> do
           debug config ("cancelling failed BlueZ connect " <> formatObjectPath device)
           ignoreErrors (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
           Exception.throwIO err
   waitForServicesResolved client config.discoveryTimeoutSeconds device
+    `Exception.onException` do
+      debug config ("cancelling unresolved BlueZ connect " <> formatObjectPath device)
+      ignoreErrors (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
 
 resetStaleDeviceConnection :: DBus.Client -> BluezConfig -> ObjectPath -> ManagedObjects -> IO ()
 resetStaleDeviceConnection client config device objects =
@@ -358,6 +362,10 @@ ignoreErrors action = do
 isBluezConnectInProgress :: SomeException -> Bool
 isBluezConnectInProgress err =
   maybe False (isInfixOf "Call failed: In Progress" . DBus.clientErrorMessage) (fromException err)
+
+isBluezConnectTimedOut :: SomeException -> Bool
+isBluezConnectTimedOut err =
+  "BlueZ D-Bus call timed out: org.bluez.Device1.Connect" `isInfixOf` show err
 
 propertiesChangedRule :: ObjectPath -> DBus.MatchRule
 propertiesChangedRule path =
