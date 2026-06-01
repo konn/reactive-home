@@ -71,6 +71,7 @@ library
     containers,
     haskesame-core,
     hasquitto-auto-reconnect,
+    random,
     safe-exceptions,
     stm,
     stm-containers,
