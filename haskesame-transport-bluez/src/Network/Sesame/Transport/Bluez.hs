@@ -8,13 +8,14 @@ import Control.Applicative ((<|>))
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
 import Control.Concurrent.STM
+import Control.Exception (SomeException, fromException)
 import Control.Exception.Safe qualified as Exception
 import DBus
 import DBus.Client qualified as DBus
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.Char (toLower)
-import Data.List (find)
+import Data.List (find, isInfixOf)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (listToMaybe, mapMaybe)
@@ -192,11 +193,15 @@ connectDevice :: DBus.Client -> BluezConfig -> ObjectPath -> ManagedObjects -> I
 connectDevice client config device objects = do
   resetStaleDeviceConnection client config device objects
   debug config ("connecting BlueZ device " <> formatObjectPath device)
-  Exception.onException
-    (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Connect")
-    do
-      debug config ("cancelling failed BlueZ connect " <> formatObjectPath device)
-      ignoreErrors (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
+  connectResult <- Exception.tryAny (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Connect")
+  case connectResult of
+    Right () -> pure ()
+    Left err
+      | isBluezConnectInProgress err -> debug config ("BlueZ connect already in progress " <> formatObjectPath device)
+      | otherwise -> do
+          debug config ("cancelling failed BlueZ connect " <> formatObjectPath device)
+          ignoreErrors (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
+          Exception.throwIO err
   waitForServicesResolved client config.discoveryTimeoutSeconds device
 
 resetStaleDeviceConnection :: DBus.Client -> BluezConfig -> ObjectPath -> ManagedObjects -> IO ()
@@ -349,6 +354,10 @@ ignoreErrors :: IO () -> IO ()
 ignoreErrors action = do
   _ <- Exception.tryAny action
   pure ()
+
+isBluezConnectInProgress :: SomeException -> Bool
+isBluezConnectInProgress err =
+  maybe False (isInfixOf "Call failed: In Progress" . DBus.clientErrorMessage) (fromException err)
 
 propertiesChangedRule :: ObjectPath -> DBus.MatchRule
 propertiesChangedRule path =
