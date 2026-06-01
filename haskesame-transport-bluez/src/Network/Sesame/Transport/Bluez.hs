@@ -18,7 +18,7 @@ import Data.Char (toLower)
 import Data.List (find, isInfixOf)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (listToMaybe, mapMaybe)
+import Data.Maybe (isNothing, listToMaybe, mapMaybe)
 import Data.Time (defaultTimeLocale, formatTime, getZonedTime)
 import Data.Word (Word16, Word8)
 import GHC.Generics (Generic)
@@ -173,21 +173,28 @@ needsCharacteristicDiscovery config =
 refreshDeviceDiscovery :: DBus.Client -> BluezConfig -> String -> ObjectPath -> IO ManagedObjects
 refreshDeviceDiscovery client config macAddress device = do
   objects <- getManagedObjects client
-  adapter <- maybe (fail "BlueZ adapter not found") pure (findAdapter objects)
-  debug config ("refreshing BlueZ discovery for " <> macAddress)
-  Exception.bracket_
-    (callNoBody config.discoveryTimeoutSeconds client adapter "org.bluez.Adapter1" "StartDiscovery")
-    (ignoreErrors (callNoBody config.discoveryTimeoutSeconds client adapter "org.bluez.Adapter1" "StopDiscovery"))
-    do
-      threadDelay bluezDiscoveryRefreshMicros
-      refreshed <- getManagedObjects client
-      case findDeviceByAddress macAddress refreshed of
-        Just refreshedDevice
-          | refreshedDevice == device -> pure refreshed
-          | otherwise -> do
-              debug config ("BlueZ device path changed after discovery: " <> formatObjectPath refreshedDevice)
-              pure refreshed
-        Nothing -> fail ("BlueZ device disappeared during discovery refresh: " <> macAddress)
+  if needsAdvertisementRefresh config device objects
+    then do
+      adapter <- maybe (fail "BlueZ adapter not found") pure (findAdapter objects)
+      debug config ("refreshing BlueZ discovery for " <> macAddress)
+      Exception.bracket_
+        (callNoBody config.discoveryTimeoutSeconds client adapter "org.bluez.Adapter1" "StartDiscovery")
+        (ignoreErrors (callNoBody config.discoveryTimeoutSeconds client adapter "org.bluez.Adapter1" "StopDiscovery"))
+        do
+          threadDelay bluezDiscoveryRefreshMicros
+          refreshed <- getManagedObjects client
+          case findDeviceByAddress macAddress refreshed of
+            Just refreshedDevice
+              | refreshedDevice == device -> pure refreshed
+              | otherwise -> do
+                  debug config ("BlueZ device path changed after discovery: " <> formatObjectPath refreshedDevice)
+                  pure refreshed
+            Nothing -> fail ("BlueZ device disappeared during discovery refresh: " <> macAddress)
+    else debug config ("skipping BlueZ discovery refresh for " <> macAddress <> "; advertisement data is already available") *> pure objects
+
+needsAdvertisementRefresh :: BluezConfig -> ObjectPath -> ManagedObjects -> Bool
+needsAdvertisementRefresh config device objects =
+  isNothing config.manufacturerData && isNothing (findAdvertisementData device objects)
 
 connectDevice :: DBus.Client -> BluezConfig -> ObjectPath -> ManagedObjects -> IO ManagedObjects
 connectDevice client config device objects = do
