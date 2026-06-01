@@ -399,12 +399,23 @@ waitForCommandStatus statusVersions statusSnapshots uuid command beforeStatusVer
 
 waitBeforeReconnect :: BridgeConfig -> PendingCommands -> UUID -> Int -> IO ReconnectWait
 waitBeforeReconnect config pendingCommands uuid reconnectDelayCapMicros = do
-  reconnectDelay <- randomReconnectDelayMicros reconnectDelayCapMicros
-  debug config ("waiting before reconnect for " <> UUID.toString uuid <> ": delay_us=" <> show reconnectDelay <> ", cap_us=" <> show reconnectDelayCapMicros)
-  reconnectNow <- waitForPendingCommandOrDelay pendingCommands uuid reconnectDelay
-  if reconnectNow
-    then debug config ("queued command pending; reconnecting Sesame device now " <> UUID.toString uuid) *> pure ReconnectWaitInterruptedByCommand
-    else pure ReconnectWaitElapsed
+  pendingNow <- hasPendingCommand pendingCommands uuid
+  if pendingNow
+    then waitForCommandReconnectSettle config uuid
+    else do
+      reconnectDelay <- randomReconnectDelayMicros reconnectDelayCapMicros
+      debug config ("waiting before reconnect for " <> UUID.toString uuid <> ": delay_us=" <> show reconnectDelay <> ", cap_us=" <> show reconnectDelayCapMicros)
+      reconnectNow <- waitForPendingCommandOrDelay pendingCommands uuid reconnectDelay
+      if reconnectNow
+        then waitForCommandReconnectSettle config uuid
+        else pure ReconnectWaitElapsed
+
+waitForCommandReconnectSettle :: BridgeConfig -> UUID -> IO ReconnectWait
+waitForCommandReconnectSettle config uuid = do
+  debug config ("queued command pending; waiting for BlueZ reconnect settle " <> UUID.toString uuid <> ": delay_us=" <> show commandReconnectSettleMicros)
+  threadDelay commandReconnectSettleMicros
+  debug config ("queued command pending; reconnecting Sesame device now " <> UUID.toString uuid)
+  pure ReconnectWaitInterruptedByCommand
 
 waitReconnectDelay :: BridgeConfig -> UUID -> Int -> IO ()
 waitReconnectDelay config uuid reconnectDelayCapMicros = do
@@ -461,6 +472,9 @@ minReconnectDelayMicros = 10000
 
 maxReconnectDelayMicros :: Int
 maxReconnectDelayMicros = 3000000
+
+commandReconnectSettleMicros :: Int
+commandReconnectSettleMicros = 750000
 
 stableConnectionSeconds :: NominalDiffTime
 stableConnectionSeconds = 30
