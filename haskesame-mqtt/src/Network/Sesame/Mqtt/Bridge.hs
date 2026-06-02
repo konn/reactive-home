@@ -45,13 +45,14 @@ runBridge mqtt config devices = do
   statusVersions <- newTVarIO Map.empty
   statusSnapshots <- newTVarIO Map.empty
   lastActivity <- newTVarIO Map.empty
+  lastCommandActivity <- newTVarIO Map.empty
   pendingCommands <- newTVarIO Map.empty
   sessions <- traverse newDeviceSession devices
   atomically (mapM_ (\session -> STMMap.insert session (deviceKey session.sessionDevice.deviceUuid) deviceMap) sessions)
   debug config ("starting bridge for " <> show (length devices) <> " Sesame device(s)")
   race_
-    (consumeCommands mqtt config deviceMap pendingCommands)
-    (forConcurrently_ sessions (runDeviceSession mqtt config statusVersions statusSnapshots lastActivity pendingCommands))
+    (consumeCommands mqtt config deviceMap lastCommandActivity pendingCommands)
+    (forConcurrently_ sessions (runDeviceSession mqtt config statusVersions statusSnapshots lastActivity lastCommandActivity pendingCommands))
 
 type DeviceMap = STMMap.Map Text DeviceSession
 
@@ -60,6 +61,8 @@ type StatusVersions = TVar (Map Text Int)
 type StatusSnapshots = TVar (Map Text StatusPayload)
 
 type LastActivity = TVar (Map Text UTCTime)
+
+type LastCommandActivity = TVar (Map Text UTCTime)
 
 type PendingCommands = TVar (Map Text PendingCommand)
 
@@ -100,8 +103,8 @@ data ReconnectReason
   | ReconnectCommandFailure !SomeException
   | ReconnectIdleBeforeCommand
 
-runDeviceSession :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> PendingCommands -> DeviceSession -> IO ()
-runDeviceSession mqtt config statusVersions statusSnapshots lastActivity pendingCommands session =
+runDeviceSession :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> LastCommandActivity -> PendingCommands -> DeviceSession -> IO ()
+runDeviceSession mqtt config statusVersions statusSnapshots lastActivity lastCommandActivity pendingCommands session =
   go minReconnectDelayMicros
   where
     uuid = session.sessionDevice.deviceUuid
@@ -125,7 +128,7 @@ runDeviceSession mqtt config statusVersions statusSnapshots lastActivity pending
                     disconnectConnected config uuid connected
               )
           debug config ("Sesame disconnected " <> UUID.toString uuid <> ": " <> either show describeConnectedResult result)
-          _ <- waitBeforeReconnect config pendingCommands uuid
+          _ <- waitBeforeReconnect config lastCommandActivity pendingCommands uuid
           go minReconnectDelayMicros
 
 runConnectedSession :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> PendingCommands -> DeviceSession -> ConnectedBridgeDevice -> IO ConnectedResult
@@ -176,8 +179,8 @@ publishDeviceStatus mqtt config statusVersions statusSnapshots lastActivity uuid
             publishStatus mqtt config uuid statusPayload
       _ -> pure ()
 
-consumeCommands :: Mqtt.AutoClient -> BridgeConfig -> DeviceMap -> PendingCommands -> IO ()
-consumeCommands mqtt config devices pendingCommands =
+consumeCommands :: Mqtt.AutoClient -> BridgeConfig -> DeviceMap -> LastCommandActivity -> PendingCommands -> IO ()
+consumeCommands mqtt config devices lastCommandActivity pendingCommands =
   forever do
     message <- Mqtt.recvMessage mqtt
     case parseCommandMessage config message of
@@ -189,6 +192,7 @@ consumeCommands mqtt config devices pendingCommands =
           Just (session, connected) ->
             if connected || shouldKeepDisconnectedCommand message.qos
               then do
+                recordActivity lastCommandActivity uuid
                 queuePendingCommand config pendingCommands session uuid command False ("QoS " <> show message.qos <> " command")
               else debug config ("ignoring QoS0 command while Sesame device may be unavailable: " <> UUID.toString uuid)
 
@@ -482,17 +486,26 @@ waitForCommandStatus statusVersions statusSnapshots uuid command beforeStatusVer
     )
     `orTimeout` timedOut
 
-waitBeforeReconnect :: BridgeConfig -> PendingCommands -> UUID -> IO ReconnectWait
-waitBeforeReconnect config pendingCommands uuid = do
+waitBeforeReconnect :: BridgeConfig -> LastCommandActivity -> PendingCommands -> UUID -> IO ReconnectWait
+waitBeforeReconnect config lastCommandActivity pendingCommands uuid = do
   pendingNow <- hasPendingCommand pendingCommands uuid
   if pendingNow
     then waitForCommandReconnectSettle config uuid
     else do
-      debug config ("waiting before passive Sesame reconnect for " <> UUID.toString uuid <> ": delay_us=" <> show passiveReconnectSettleMicros)
-      commandArrived <- waitForPendingCommandOrDelay pendingCommands uuid passiveReconnectSettleMicros
+      delayMicros <- passiveReconnectDelayMicros config lastCommandActivity uuid
+      debug config ("waiting before passive Sesame reconnect for " <> UUID.toString uuid <> ": delay_us=" <> show delayMicros)
+      commandArrived <- waitForPendingCommandOrDelay pendingCommands uuid delayMicros
       if commandArrived
         then waitForCommandReconnectSettle config uuid
         else debug config ("passively reconnecting Sesame device after disconnect " <> UUID.toString uuid) *> pure ReconnectWaitElapsed
+
+passiveReconnectDelayMicros :: BridgeConfig -> LastCommandActivity -> UUID -> IO Int
+passiveReconnectDelayMicros config lastCommandActivity uuid =
+  commandIdleAge lastCommandActivity uuid >>= \case
+    Just commandAge | commandAge <= activeCommandWindow -> do
+      debug config ("using active-session passive reconnect delay for " <> UUID.toString uuid <> ": last_command_age_s=" <> show (round (realToFrac commandAge :: Double) :: Int) <> ", delay_us=" <> show activePassiveReconnectSettleMicros)
+      pure activePassiveReconnectSettleMicros
+    _ -> pure passiveReconnectSettleMicros
 
 waitForCommandReconnectSettle :: BridgeConfig -> UUID -> IO ReconnectWait
 waitForCommandReconnectSettle config uuid = do
@@ -583,6 +596,9 @@ commandReconnectSettleMicros = 250000
 passiveReconnectSettleMicros :: Int
 passiveReconnectSettleMicros = 1500000
 
+activePassiveReconnectSettleMicros :: Int
+activePassiveReconnectSettleMicros = 250000
+
 commandStatusWaitMicros :: Int
 commandStatusWaitMicros = 2500000
 
@@ -597,6 +613,9 @@ queuedCommandSettleMicros = 250000
 
 commandIdleRefreshAge :: NominalDiffTime
 commandIdleRefreshAge = 30
+
+activeCommandWindow :: NominalDiffTime
+activeCommandWindow = 60
 
 deviceKey :: UUID -> Text
 deviceKey = T.pack . UUID.toString
