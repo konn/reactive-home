@@ -97,14 +97,23 @@ closeBluezTransport closed remoteClosed client config device notifyChar =
       else do
         disconnected <- readTVarIO remoteClosed
         debug config (if disconnected then "cleaning up BlueZ transport after device disconnect" else "closing BlueZ transport")
-        _ <- Exception.tryAny (callNoBody config.discoveryTimeoutSeconds client notifyChar "org.bluez.GattCharacteristic1" "StopNotify")
+        logBluezCloseCall config "StopNotify" (callNoBody config.discoveryTimeoutSeconds client notifyChar "org.bluez.GattCharacteristic1" "StopNotify")
         if disconnected
           then pure ()
           else do
-            _ <- Exception.tryAny (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
+            logBluezCloseCall config "Device1.Disconnect" (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
             pure ()
+        debug config "disconnecting from system D-Bus"
         DBus.disconnect client
+        debug config "BlueZ transport closed"
         pure True
+
+logBluezCloseCall :: BluezConfig -> String -> IO () -> IO ()
+logBluezCloseCall config label action = do
+  debug config ("BlueZ close step starting: " <> label)
+  Exception.tryAny action >>= \case
+    Right () -> debug config ("BlueZ close step finished: " <> label)
+    Left err -> debug config ("BlueZ close step failed: " <> label <> ": " <> show err)
 
 type BluezProperties = Map String Variant
 

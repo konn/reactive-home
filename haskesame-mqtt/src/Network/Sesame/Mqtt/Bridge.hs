@@ -578,16 +578,16 @@ bluezLocalAbortMinReconnectDelayMicros :: Int
 bluezLocalAbortMinReconnectDelayMicros = 500000
 
 commandReconnectSettleMicros :: Int
-commandReconnectSettleMicros = 1000000
+commandReconnectSettleMicros = 250000
 
 passiveReconnectSettleMicros :: Int
 passiveReconnectSettleMicros = 1500000
 
 commandStatusWaitMicros :: Int
-commandStatusWaitMicros = 3000000
+commandStatusWaitMicros = 2500000
 
 commandResponseGraceMicros :: Int
-commandResponseGraceMicros = 1500000
+commandResponseGraceMicros = 1000000
 
 commandSettleMicros :: Int
 commandSettleMicros = 500000
