@@ -127,8 +127,9 @@ sendCommand client maybeCipher command = do
 
 waitRegisteredResponse :: Sesame5Client -> ItemCode -> TQueue (Either SesameException SesameResponse) -> Int -> IO SesameResponse
 waitRegisteredResponse client expected queue timeoutMicros = do
-  result <- Exception.tryAny (either Exception.throwIO pure =<< readTQueueOrTimeout queue (Just timeoutMicros))
-  unregisterResponseWaiter client expected
+  result <-
+    Exception.tryAny (either Exception.throwIO pure =<< readTQueueOrTimeout queue (Just timeoutMicros))
+      `Exception.finally` unregisterResponseWaiter client expected
   case result of
     Left err -> Exception.throwIO err
     Right response -> pure response

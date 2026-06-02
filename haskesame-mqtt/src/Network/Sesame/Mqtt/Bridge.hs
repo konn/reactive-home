@@ -62,7 +62,16 @@ type PendingCommands = TVar (Map Text PendingCommand)
 data PendingCommand = PendingCommand
   { pendingLockCommand :: !LockCommand
   , pendingForceSend :: !Bool
+  , pendingSameSessionRetries :: !Int
   }
+
+newPendingCommand :: LockCommand -> Bool -> PendingCommand
+newPendingCommand command forceSend =
+  PendingCommand
+    { pendingLockCommand = command
+    , pendingForceSend = forceSend
+    , pendingSameSessionRetries = 0
+    }
 
 superviseDevice :: Mqtt.AutoClient -> BridgeConfig -> DeviceMap -> CommandLocks -> StatusVersions -> StatusSnapshots -> PendingCommands -> BridgeDevice -> IO ()
 superviseDevice mqtt config deviceMap commandLocks statusVersions statusSnapshots pendingCommands device =
@@ -123,7 +132,7 @@ consumeCommands mqtt config devices commandLocks statusVersions statusSnapshots 
           Just Nothing ->
             if shouldKeepDisconnectedCommand message.qos
               then do
-                atomically (modifyTVar' pendingCommands (Map.insert (deviceKey uuid) (PendingCommand command True)))
+                atomically (modifyTVar' pendingCommands (Map.insert (deviceKey uuid) (newPendingCommand command True)))
                 debug config ("queued disconnected command for " <> UUID.toString uuid <> ": command=" <> show command <> ", qos=" <> show message.qos)
               else debug config ("ignoring QoS0 command while Sesame device is disconnected: " <> UUID.toString uuid)
           Just (Just connected) -> startCommand config devices commandLocks statusVersions statusSnapshots pendingCommands uuid connected command False
@@ -132,13 +141,13 @@ startCommand :: BridgeConfig -> DeviceMap -> CommandLocks -> StatusVersions -> S
 startCommand config devices commandLocks statusVersions statusSnapshots pendingCommands uuid connected command forceSend =
   case Map.lookup (deviceKey uuid) commandLocks of
     Nothing -> do
-      _ <- async (commandWorker config devices statusVersions statusSnapshots pendingCommands Nothing uuid connected (PendingCommand command forceSend))
+      _ <- async (commandWorker config devices statusVersions statusSnapshots pendingCommands Nothing uuid connected (newPendingCommand command forceSend))
       pure ()
     Just commandLock ->
       tryTakeMVar commandLock >>= \case
         Nothing -> queuePendingCommand config pendingCommands uuid command False "command already in progress"
         Just () -> do
-          _ <- async (commandWorker config devices statusVersions statusSnapshots pendingCommands (Just commandLock) uuid connected (PendingCommand command forceSend))
+          _ <- async (commandWorker config devices statusVersions statusSnapshots pendingCommands (Just commandLock) uuid connected (newPendingCommand command forceSend))
           pure ()
 
 commandWorker :: BridgeConfig -> DeviceMap -> StatusVersions -> StatusSnapshots -> PendingCommands -> Maybe (MVar ()) -> UUID -> ConnectedBridgeDevice -> PendingCommand -> IO ()
@@ -174,7 +183,7 @@ executeCommandUnlocked config devices statusVersions statusSnapshots pendingComm
       result <- Exception.tryAny (sendCommandAndWaitForStatus config statusVersions statusSnapshots uuid connected command.pendingLockCommand beforeStatusVersion)
       case result of
         Right True -> pure True
-        Right False -> requeueFailedCommand config devices pendingCommands uuid connected command.pendingLockCommand "post-command status timeout" *> pure False
+        Right False -> retryOrRequeueFailedCommand config devices pendingCommands uuid connected command "post-command status timeout"
         Left err -> do
           debug config ("command failed for " <> UUID.toString uuid <> ": " <> show err)
           requeueFailedCommand config devices pendingCommands uuid connected command.pendingLockCommand "command failure"
@@ -221,7 +230,7 @@ hasPendingCommand pendingCommands uuid =
 
 queuePendingCommand :: BridgeConfig -> PendingCommands -> UUID -> LockCommand -> Bool -> String -> IO ()
 queuePendingCommand config pendingCommands uuid command forceSend reason = do
-  atomically (modifyTVar' pendingCommands (Map.insert (deviceKey uuid) (PendingCommand command forceSend)))
+  atomically (modifyTVar' pendingCommands (Map.insert (deviceKey uuid) (newPendingCommand command forceSend)))
   debug config ("queued latest command because " <> reason <> " for " <> UUID.toString uuid <> ": command=" <> show command <> ", force_send=" <> show forceSend)
 
 takePendingCommand :: PendingCommands -> UUID -> IO (Maybe PendingCommand)
@@ -255,7 +264,7 @@ requeueFailedCommand config devices pendingCommands uuid connected command reaso
       requeued <-
         if pending
           then pure False
-          else modifyTVar' pendingCommands (Map.insert key (PendingCommand command True)) *> pure True
+          else modifyTVar' pendingCommands (Map.insert key (newPendingCommand command True)) *> pure True
       STMMap.insert Nothing key devices
       pure requeued
   if requeued
@@ -263,6 +272,17 @@ requeueFailedCommand config devices pendingCommands uuid connected command reaso
     else debug config ("left newer pending command after " <> reason <> " for " <> UUID.toString uuid <> ": failed_command=" <> show command)
   _ <- Exception.tryAny connected.disconnectSesameClient
   pure ()
+
+retryOrRequeueFailedCommand :: BridgeConfig -> DeviceMap -> PendingCommands -> UUID -> ConnectedBridgeDevice -> PendingCommand -> String -> IO Bool
+retryOrRequeueFailedCommand config devices pendingCommands uuid connected command reason
+  | command.pendingSameSessionRetries < maxSameSessionCommandRetries = do
+      let retryCommand = command {pendingForceSend = True, pendingSameSessionRetries = command.pendingSameSessionRetries + 1}
+      atomically (modifyTVar' pendingCommands (Map.insert (deviceKey uuid) retryCommand))
+      debug config ("retrying command on same Sesame session after " <> reason <> " for " <> UUID.toString uuid <> ": command=" <> show command.pendingLockCommand <> ", retry=" <> show retryCommand.pendingSameSessionRetries)
+      pure True
+  | otherwise = do
+      requeueFailedCommand config devices pendingCommands uuid connected command.pendingLockCommand reason
+      pure False
 
 publishStatus :: Mqtt.AutoClient -> BridgeConfig -> UUID -> StatusPayload -> IO ()
 publishStatus mqtt config uuid status = do
@@ -446,6 +466,9 @@ commandSettleMicros = 500000
 
 queuedCommandSettleMicros :: Int
 queuedCommandSettleMicros = 250000
+
+maxSameSessionCommandRetries :: Int
+maxSameSessionCommandRetries = 1
 
 deviceKey :: UUID -> Text
 deviceKey = T.pack . UUID.toString
