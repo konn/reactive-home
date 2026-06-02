@@ -73,6 +73,8 @@ newPendingCommand command forceSend =
     , pendingSameSessionRetries = 0
     }
 
+data ReconnectWait = ReconnectWaitElapsed | ReconnectWaitInterruptedByCommand
+
 superviseDevice :: Mqtt.AutoClient -> BridgeConfig -> DeviceMap -> CommandLocks -> StatusVersions -> StatusSnapshots -> PendingCommands -> BridgeDevice -> IO ()
 superviseDevice mqtt config deviceMap commandLocks statusVersions statusSnapshots pendingCommands device =
   go minReconnectDelayMicros
@@ -100,7 +102,7 @@ superviseDevice mqtt config deviceMap commandLocks statusVersions statusSnapshot
                         pure ()
               )
           debug config ("Sesame disconnected " <> UUID.toString device.deviceUuid <> ": " <> either show (const "status loop ended") publishResult)
-          waitBeforeReconnect config pendingCommands device.deviceUuid
+          _ <- waitBeforeReconnect config pendingCommands device.deviceUuid
           go minReconnectDelayMicros
 
 publishDeviceStatus :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> UUID -> Sesame.Sesame5Client -> IO ()
@@ -391,22 +393,24 @@ waitForCommandStatus statusVersions statusSnapshots uuid command beforeStatusVer
     )
     `orTimeout` timedOut
 
-waitBeforeReconnect :: BridgeConfig -> PendingCommands -> UUID -> IO ()
+waitBeforeReconnect :: BridgeConfig -> PendingCommands -> UUID -> IO ReconnectWait
 waitBeforeReconnect config pendingCommands uuid = do
   pendingNow <- hasPendingCommand pendingCommands uuid
   if pendingNow
     then waitForCommandReconnectSettle config uuid
     else do
-      debug config ("waiting for queued command before reconnecting Sesame device " <> UUID.toString uuid)
-      waitForPendingCommand pendingCommands uuid
-      waitForCommandReconnectSettle config uuid
+      debug config ("waiting before passive Sesame reconnect for " <> UUID.toString uuid <> ": delay_us=" <> show passiveReconnectSettleMicros)
+      commandArrived <- waitForPendingCommandOrDelay pendingCommands uuid passiveReconnectSettleMicros
+      if commandArrived
+        then waitForCommandReconnectSettle config uuid
+        else debug config ("passively reconnecting Sesame device after disconnect " <> UUID.toString uuid) *> pure ReconnectWaitElapsed
 
-waitForCommandReconnectSettle :: BridgeConfig -> UUID -> IO ()
+waitForCommandReconnectSettle :: BridgeConfig -> UUID -> IO ReconnectWait
 waitForCommandReconnectSettle config uuid = do
   debug config ("queued command pending; waiting for BlueZ reconnect settle " <> UUID.toString uuid <> ": delay_us=" <> show commandReconnectSettleMicros)
   threadDelay commandReconnectSettleMicros
   debug config ("queued command pending; reconnecting Sesame device now " <> UUID.toString uuid)
-  pure ()
+  pure ReconnectWaitInterruptedByCommand
 
 waitReconnectDelay :: BridgeConfig -> UUID -> Int -> IO ()
 waitReconnectDelay config uuid reconnectDelayCapMicros = do
@@ -422,11 +426,20 @@ nextReconnectDelayMicros :: Int -> Int
 nextReconnectDelayMicros reconnectDelayCapMicros =
   min maxReconnectDelayMicros (max minReconnectDelayMicros reconnectDelayCapMicros * 2)
 
-waitForPendingCommand :: PendingCommands -> UUID -> IO ()
-waitForPendingCommand pendingCommands uuid =
-  atomically do
-    pending <- Map.member (deviceKey uuid) <$> readTVar pendingCommands
-    check pending
+waitForPendingCommandOrDelay :: PendingCommands -> UUID -> Int -> IO Bool
+waitForPendingCommandOrDelay pendingCommands uuid timeoutMicros = do
+  timedOut <- registerDelay timeoutMicros
+  atomically
+    ( ( do
+          pending <- Map.member (deviceKey uuid) <$> readTVar pendingCommands
+          check pending
+          pure True
+      )
+        `orElse` do
+          timedOutNow <- readTVar timedOut
+          check timedOutNow
+          pure False
+    )
 
 orTimeout :: STM Bool -> TVar Bool -> IO Bool
 orTimeout waitAction timedOut =
@@ -457,6 +470,9 @@ maxReconnectDelayMicros = 3000000
 
 commandReconnectSettleMicros :: Int
 commandReconnectSettleMicros = 1000000
+
+passiveReconnectSettleMicros :: Int
+passiveReconnectSettleMicros = 1500000
 
 commandStatusWaitMicros :: Int
 commandStatusWaitMicros = 3000000
