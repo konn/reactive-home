@@ -10,7 +10,7 @@ module Network.Sesame.Mqtt.Bridge (
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async, forConcurrently_, race, race_, waitCatch, withAsync)
-import Control.Concurrent.STM (STM, TQueue, TVar, atomically, check, modifyTVar', newTQueueIO, newTVarIO, orElse, readTQueue, readTVar, readTVarIO, registerDelay, writeTQueue, writeTVar)
+import Control.Concurrent.STM (STM, TQueue, TVar, atomically, check, modifyTVar', newTQueueIO, newTVarIO, orElse, readTQueue, readTVar, readTVarIO, registerDelay, retry, writeTQueue, writeTVar)
 import Control.Exception (SomeException)
 import Control.Exception.Safe qualified as Exception
 import Control.Monad (forever, when)
@@ -102,6 +102,7 @@ data ReconnectReason
   = ReconnectPostCommandTimeout
   | ReconnectCommandFailure !SomeException
   | ReconnectIdleBeforeCommand
+  | ReconnectPostCommandQuietRefresh
 
 runDeviceSession :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> LastCommandActivity -> PendingCommands -> DeviceSession -> IO ()
 runDeviceSession mqtt config statusVersions statusSnapshots lastActivity lastCommandActivity pendingCommands session =
@@ -154,6 +155,7 @@ describeConnectedResult = \case
   ConnectedByCommandLoop (CommandLoopReconnect ReconnectPostCommandTimeout) -> "command requested reconnect after post-command status timeout"
   ConnectedByCommandLoop (CommandLoopReconnect (ReconnectCommandFailure err)) -> "command requested reconnect after failure: " <> show err
   ConnectedByCommandLoop (CommandLoopReconnect ReconnectIdleBeforeCommand) -> "command requested reconnect before sending on idle Sesame session"
+  ConnectedByCommandLoop (CommandLoopReconnect ReconnectPostCommandQuietRefresh) -> "command requested reconnect after post-command quiet refresh"
   ConnectedByCommandLoop (CommandLoopConnectionClosed err) -> show err
 
 disconnectConnected :: BridgeConfig -> UUID -> ConnectedBridgeDevice -> IO ()
@@ -215,17 +217,22 @@ runCommandLoop config statusVersions statusSnapshots lastActivity pendingCommand
       result <- executeCommandUnlocked config statusVersions statusSnapshots lastActivity pendingCommands uuid connected nextCommand
       atomically (writeTVar inFlightCommand Nothing)
       case result of
-        CommandDone ->
+        CommandSkipped ->
           takePendingCommand pendingCommands uuid >>= \case
             Nothing -> takePendingCommandBlocking pendingCommands session >>= drain
             Just pendingCommand -> do
               debug config ("running pending command for " <> UUID.toString uuid <> ": command=" <> show pendingCommand.pendingLockCommand <> ", force_send=" <> show pendingCommand.pendingForceSend)
               drain pendingCommand
+        CommandSentAndConfirmed ->
+          waitForPostCommandQuietRefresh config pendingCommands uuid nextCommand.pendingLockCommand >>= \case
+            Nothing -> pure (CommandLoopReconnect ReconnectPostCommandQuietRefresh)
+            Just pendingCommand -> drain pendingCommand
         CommandNeedsReconnect reason -> pure (CommandLoopReconnect reason)
         CommandConnectionClosed err -> pure (CommandLoopConnectionClosed err)
 
 data CommandExecutionResult
-  = CommandDone
+  = CommandSkipped
+  | CommandSentAndConfirmed
   | CommandNeedsReconnect !ReconnectReason
   | CommandConnectionClosed !SomeException
 
@@ -236,22 +243,22 @@ executeCommandUnlocked config statusVersions statusSnapshots lastActivity pendin
       requeued <- requeueFailedCommand config pendingCommands uuid command.pendingLockCommand ("idle Sesame session refresh before command after " <> show (round (realToFrac idleAge :: Double) :: Int) <> "s idle")
       if requeued
         then pure (CommandNeedsReconnect ReconnectIdleBeforeCommand)
-        else pure CommandDone
+        else pure CommandSkipped
     _ ->
       readStatusSnapshot statusSnapshots uuid >>= \case
         Just status
           | not command.pendingForceSend && commandSatisfied command.pendingLockCommand status ->
-              debug config ("skipping command already satisfied for " <> UUID.toString uuid <> ": command=" <> show command.pendingLockCommand <> ", status=" <> show status) *> pure CommandDone
+              debug config ("skipping command already satisfied for " <> UUID.toString uuid <> ": command=" <> show command.pendingLockCommand <> ", status=" <> show status) *> pure CommandSkipped
         _ -> do
           beforeStatusVersion <- readStatusVersion statusVersions uuid
           result <- Exception.tryAny (sendCommandAndWaitForStatus config statusVersions statusSnapshots uuid connected command.pendingLockCommand beforeStatusVersion)
           case result of
-            Right True -> pure CommandDone
+            Right True -> pure CommandSentAndConfirmed
             Right False -> do
               requeued <- requeueFailedCommand config pendingCommands uuid command.pendingLockCommand "post-command status timeout"
               if requeued
                 then pure (CommandNeedsReconnect ReconnectPostCommandTimeout)
-                else pure CommandDone
+                else pure CommandSkipped
             Left err -> do
               debug config ("command failed for " <> UUID.toString uuid <> ": " <> show err)
               _ <- requeueFailedCommand config pendingCommands uuid command.pendingLockCommand "command failure"
@@ -271,7 +278,6 @@ sendCommandAndWaitForStatus config statusVersions statusSnapshots uuid connected
       Left (Left err) -> Exception.throwIO err
       Right True -> do
         debug config ("post-command Sesame status satisfied before command response for " <> UUID.toString uuid <> ": command=" <> show command)
-        threadDelay commandSettleMicros
         pure True
       Right False -> do
         debug config ("timed out waiting for post-command Sesame status before command response from " <> UUID.toString uuid <> ": command=" <> show command <> "; waiting for late command response/status")
@@ -284,7 +290,6 @@ waitForLateCommandResponseOrStatus config statusVersions statusSnapshots uuid co
     Left (Left err) -> Exception.throwIO err
     Right True -> do
       debug config ("post-command Sesame status satisfied during late command response grace for " <> UUID.toString uuid <> ": command=" <> show command)
-      threadDelay commandSettleMicros
       pure True
     Right False -> do
       debug config ("timed out waiting for late command response/status from " <> UUID.toString uuid <> ": command=" <> show command)
@@ -331,6 +336,17 @@ takePendingCommandBlocking pendingCommands session =
           modifyTVar' pendingCommands (Map.delete key)
           pure pendingCommand
         Nothing -> readTQueue session.sessionCommandSignal *> loop
+
+waitForPostCommandQuietRefresh :: BridgeConfig -> PendingCommands -> UUID -> LockCommand -> IO (Maybe PendingCommand)
+waitForPostCommandQuietRefresh config pendingCommands uuid command = do
+  debug config ("post-command quiet window started for " <> UUID.toString uuid <> ": delay_us=" <> show postCommandQuietRefreshMicros <> ", command=" <> show command)
+  takePendingCommandOrDelay pendingCommands uuid postCommandQuietRefreshMicros >>= \case
+    Just pendingCommand -> do
+      debug config ("pending command arrived during post-command quiet window for " <> UUID.toString uuid <> ": delay_us=" <> show postCommandQuietRefreshMicros <> ", command=" <> show command <> ", pending_command=" <> show pendingCommand.pendingLockCommand <> ", force_send=" <> show pendingCommand.pendingForceSend)
+      pure (Just pendingCommand)
+    Nothing -> do
+      debug config ("refreshing Sesame session after post-command quiet window for " <> UUID.toString uuid <> ": delay_us=" <> show postCommandQuietRefreshMicros <> ", command=" <> show command)
+      pure Nothing
 
 requeueFailedCommand :: BridgeConfig -> PendingCommands -> UUID -> LockCommand -> String -> IO Bool
 requeueFailedCommand config pendingCommands uuid command reason = do
@@ -445,7 +461,6 @@ waitAfterCommandWithTimeout config statusVersions statusSnapshots uuid command b
   if statusSatisfied
     then debug config ("post-command Sesame status satisfied for " <> UUID.toString uuid <> ": command=" <> show command)
     else debug config ("timed out waiting for post-command Sesame status from " <> UUID.toString uuid <> ": command=" <> show command)
-  threadDelay commandSettleMicros
   pure statusSatisfied
 
 shouldKeepDisconnectedCommand :: Mqtt.QoS -> Bool
@@ -557,6 +572,25 @@ waitForPendingCommandOrDelay pendingCommands uuid timeoutMicros = do
           pure False
     )
 
+takePendingCommandOrDelay :: PendingCommands -> UUID -> Int -> IO (Maybe PendingCommand)
+takePendingCommandOrDelay pendingCommands uuid timeoutMicros = do
+  timedOut <- registerDelay timeoutMicros
+  atomically
+    ( ( do
+          let key = deviceKey uuid
+          command <- Map.lookup key <$> readTVar pendingCommands
+          case command of
+            Just pendingCommand -> do
+              modifyTVar' pendingCommands (Map.delete key)
+              pure (Just pendingCommand)
+            Nothing -> retry
+      )
+        `orElse` do
+          timedOutNow <- readTVar timedOut
+          check timedOutNow
+          pure Nothing
+    )
+
 orTimeout :: STM Bool -> TVar Bool -> IO Bool
 orTimeout waitAction timedOut =
   atomically
@@ -605,11 +639,11 @@ commandStatusWaitMicros = 2500000
 commandResponseGraceMicros :: Int
 commandResponseGraceMicros = 1000000
 
-commandSettleMicros :: Int
-commandSettleMicros = 500000
-
 queuedCommandSettleMicros :: Int
 queuedCommandSettleMicros = 250000
+
+postCommandQuietRefreshMicros :: Int
+postCommandQuietRefreshMicros = 750000
 
 commandIdleRefreshAge :: NominalDiffTime
 commandIdleRefreshAge = 30
