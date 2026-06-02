@@ -9,7 +9,7 @@ module Network.Sesame.Mqtt.Bridge (
 ) where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (async, forConcurrently_, race, race_, withAsync)
+import Control.Concurrent.Async (Async, async, forConcurrently_, race, race_, waitCatch, withAsync)
 import Control.Concurrent.MVar (MVar, newMVar, putMVar, tryTakeMVar)
 import Control.Concurrent.STM (STM, TVar, atomically, check, modifyTVar', newTVarIO, orElse, readTVar, readTVarIO, registerDelay)
 import Control.Exception (SomeException)
@@ -197,15 +197,32 @@ sendCommandAndWaitForStatus config statusVersions statusSnapshots uuid connected
         CommandLock -> debug config ("locking " <> UUID.toString uuid) *> Sesame.lock connected.sesameClient config.historyName
         CommandUnlock -> debug config ("unlocking " <> UUID.toString uuid) *> Sesame.unlock connected.sesameClient config.historyName
       statusAction = waitForCommandStatus statusVersions statusSnapshots uuid command beforeStatusVersion commandStatusWaitMicros
-  race sendAction statusAction >>= \case
-    Left () -> waitAfterCommand config statusVersions statusSnapshots uuid command beforeStatusVersion
+  withAsync sendAction \sendAsync ->
+    race (waitCatch sendAsync) statusAction >>= \case
+      Left (Right ()) -> waitAfterCommand config statusVersions statusSnapshots uuid command beforeStatusVersion
+      Left (Left err) -> Exception.throwIO err
+      Right True -> do
+        debug config ("post-command Sesame status satisfied before command response for " <> UUID.toString uuid <> ": command=" <> show command)
+        threadDelay commandSettleMicros
+        pure True
+      Right False -> do
+        debug config ("timed out waiting for post-command Sesame status before command response from " <> UUID.toString uuid <> ": command=" <> show command <> "; waiting for late command response/status")
+        waitForLateCommandResponseOrStatus config statusVersions statusSnapshots uuid command beforeStatusVersion sendAsync
+
+waitForLateCommandResponseOrStatus :: BridgeConfig -> StatusVersions -> StatusSnapshots -> UUID -> LockCommand -> Int -> Async () -> IO Bool
+waitForLateCommandResponseOrStatus config statusVersions statusSnapshots uuid command beforeStatusVersion sendAsync =
+  race (waitCatch sendAsync) statusAction >>= \case
+    Left (Right ()) -> waitAfterCommandWithTimeout config statusVersions statusSnapshots uuid command beforeStatusVersion commandResponseGraceMicros
+    Left (Left err) -> Exception.throwIO err
     Right True -> do
-      debug config ("post-command Sesame status satisfied before command response for " <> UUID.toString uuid <> ": command=" <> show command)
+      debug config ("post-command Sesame status satisfied during late command response grace for " <> UUID.toString uuid <> ": command=" <> show command)
       threadDelay commandSettleMicros
       pure True
     Right False -> do
-      debug config ("timed out waiting for post-command Sesame status before command response from " <> UUID.toString uuid <> ": command=" <> show command)
+      debug config ("timed out waiting for late command response/status from " <> UUID.toString uuid <> ": command=" <> show command)
       pure False
+  where
+    statusAction = waitForCommandStatus statusVersions statusSnapshots uuid command beforeStatusVersion commandResponseGraceMicros
 
 runPendingCommand :: BridgeConfig -> DeviceMap -> CommandLocks -> StatusVersions -> StatusSnapshots -> PendingCommands -> UUID -> ConnectedBridgeDevice -> IO ()
 runPendingCommand config devices commandLocks statusVersions statusSnapshots pendingCommands uuid connected = do
@@ -343,9 +360,13 @@ readStatusSnapshot statusSnapshots uuid =
   Map.lookup (deviceKey uuid) <$> readTVarIO statusSnapshots
 
 waitAfterCommand :: BridgeConfig -> StatusVersions -> StatusSnapshots -> UUID -> LockCommand -> Int -> IO Bool
-waitAfterCommand config statusVersions statusSnapshots uuid command beforeStatusVersion = do
+waitAfterCommand config statusVersions statusSnapshots uuid command beforeStatusVersion =
+  waitAfterCommandWithTimeout config statusVersions statusSnapshots uuid command beforeStatusVersion commandStatusWaitMicros
+
+waitAfterCommandWithTimeout :: BridgeConfig -> StatusVersions -> StatusSnapshots -> UUID -> LockCommand -> Int -> Int -> IO Bool
+waitAfterCommandWithTimeout config statusVersions statusSnapshots uuid command beforeStatusVersion timeoutMicros = do
   debug config ("waiting for post-command Sesame status from " <> UUID.toString uuid <> ": command=" <> show command)
-  statusSatisfied <- waitForCommandStatus statusVersions statusSnapshots uuid command beforeStatusVersion commandStatusWaitMicros
+  statusSatisfied <- waitForCommandStatus statusVersions statusSnapshots uuid command beforeStatusVersion timeoutMicros
   if statusSatisfied
     then debug config ("post-command Sesame status satisfied for " <> UUID.toString uuid <> ": command=" <> show command)
     else debug config ("timed out waiting for post-command Sesame status from " <> UUID.toString uuid <> ": command=" <> show command)
@@ -473,6 +494,9 @@ passiveReconnectSettleMicros = 1500000
 
 commandStatusWaitMicros :: Int
 commandStatusWaitMicros = 3000000
+
+commandResponseGraceMicros :: Int
+commandResponseGraceMicros = 1500000
 
 commandSettleMicros :: Int
 commandSettleMicros = 500000
