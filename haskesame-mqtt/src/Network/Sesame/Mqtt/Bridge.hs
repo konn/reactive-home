@@ -23,6 +23,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (defaultTimeLocale, formatTime, getZonedTime)
+import Data.Time.Clock (NominalDiffTime, UTCTime, diffUTCTime, getCurrentTime)
 import Data.UUID (UUID)
 import Data.UUID qualified as UUID
 import Network.Mqtt.Client.AutoReconnect qualified as Mqtt
@@ -43,19 +44,22 @@ runBridge mqtt config devices = do
   deviceMap <- STMMap.newIO
   statusVersions <- newTVarIO Map.empty
   statusSnapshots <- newTVarIO Map.empty
+  lastActivity <- newTVarIO Map.empty
   pendingCommands <- newTVarIO Map.empty
   sessions <- traverse newDeviceSession devices
   atomically (mapM_ (\session -> STMMap.insert session (deviceKey session.sessionDevice.deviceUuid) deviceMap) sessions)
   debug config ("starting bridge for " <> show (length devices) <> " Sesame device(s)")
   race_
     (consumeCommands mqtt config deviceMap pendingCommands)
-    (forConcurrently_ sessions (runDeviceSession mqtt config statusVersions statusSnapshots pendingCommands))
+    (forConcurrently_ sessions (runDeviceSession mqtt config statusVersions statusSnapshots lastActivity pendingCommands))
 
 type DeviceMap = STMMap.Map Text DeviceSession
 
 type StatusVersions = TVar (Map Text Int)
 
 type StatusSnapshots = TVar (Map Text StatusPayload)
+
+type LastActivity = TVar (Map Text UTCTime)
 
 type PendingCommands = TVar (Map Text PendingCommand)
 
@@ -94,9 +98,10 @@ data CommandLoopResult
 data ReconnectReason
   = ReconnectPostCommandTimeout
   | ReconnectCommandFailure !SomeException
+  | ReconnectIdleBeforeCommand
 
-runDeviceSession :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> PendingCommands -> DeviceSession -> IO ()
-runDeviceSession mqtt config statusVersions statusSnapshots pendingCommands session =
+runDeviceSession :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> PendingCommands -> DeviceSession -> IO ()
+runDeviceSession mqtt config statusVersions statusSnapshots lastActivity pendingCommands session =
   go minReconnectDelayMicros
   where
     uuid = session.sessionDevice.deviceUuid
@@ -111,9 +116,10 @@ runDeviceSession mqtt config statusVersions statusSnapshots pendingCommands sess
         Right connected -> do
           debug config ("Sesame connected " <> UUID.toString uuid)
           atomically (writeTVar session.sessionConnected True)
+          recordActivity lastActivity uuid
           result <-
             Exception.tryAny
-              ( runConnectedSession mqtt config statusVersions statusSnapshots pendingCommands session connected
+              ( runConnectedSession mqtt config statusVersions statusSnapshots lastActivity pendingCommands session connected
                   `Exception.finally` do
                     atomically (writeTVar session.sessionConnected False)
                     disconnectConnected config uuid connected
@@ -122,14 +128,14 @@ runDeviceSession mqtt config statusVersions statusSnapshots pendingCommands sess
           _ <- waitBeforeReconnect config pendingCommands uuid
           go minReconnectDelayMicros
 
-runConnectedSession :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> PendingCommands -> DeviceSession -> ConnectedBridgeDevice -> IO ConnectedResult
-runConnectedSession mqtt config statusVersions statusSnapshots pendingCommands session connected = do
+runConnectedSession :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> PendingCommands -> DeviceSession -> ConnectedBridgeDevice -> IO ConnectedResult
+runConnectedSession mqtt config statusVersions statusSnapshots lastActivity pendingCommands session connected = do
   inFlightCommand <- newTVarIO Nothing
   settleQueuedCommandAfterLogin config pendingCommands uuid
-  withAsync (publishDeviceStatus mqtt config statusVersions statusSnapshots uuid connected.sesameClient) \statusAsync ->
+  withAsync (publishDeviceStatus mqtt config statusVersions statusSnapshots lastActivity uuid connected.sesameClient) \statusAsync ->
     race
       (waitCatch statusAsync)
-      (ConnectedByCommandLoop <$> runCommandLoop config statusVersions statusSnapshots pendingCommands inFlightCommand session connected)
+      (ConnectedByCommandLoop <$> runCommandLoop config statusVersions statusSnapshots lastActivity pendingCommands inFlightCommand session connected)
       >>= \case
         Left statusResult -> do
           requeueInFlightAfterStatusEnd config pendingCommands uuid inFlightCommand statusResult
@@ -144,6 +150,7 @@ describeConnectedResult = \case
   ConnectedByStatusLoop (Right ()) -> "status loop ended"
   ConnectedByCommandLoop (CommandLoopReconnect ReconnectPostCommandTimeout) -> "command requested reconnect after post-command status timeout"
   ConnectedByCommandLoop (CommandLoopReconnect (ReconnectCommandFailure err)) -> "command requested reconnect after failure: " <> show err
+  ConnectedByCommandLoop (CommandLoopReconnect ReconnectIdleBeforeCommand) -> "command requested reconnect before sending on idle Sesame session"
   ConnectedByCommandLoop (CommandLoopConnectionClosed err) -> show err
 
 disconnectConnected :: BridgeConfig -> UUID -> ConnectedBridgeDevice -> IO ()
@@ -152,10 +159,11 @@ disconnectConnected config uuid connected = do
   _ <- Exception.tryAny connected.disconnectSesameClient
   pure ()
 
-publishDeviceStatus :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> UUID -> Sesame.Sesame5Client -> IO ()
-publishDeviceStatus mqtt config statusVersions statusSnapshots uuid sesame =
+publishDeviceStatus :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> UUID -> Sesame.Sesame5Client -> IO ()
+publishDeviceStatus mqtt config statusVersions statusSnapshots lastActivity uuid sesame =
   forever do
     SesamePublish publishItem payload <- Sesame.readPublish sesame
+    recordActivity lastActivity uuid
     debug config ("received Sesame publish from " <> UUID.toString uuid <> ": " <> show publishItem)
     case publishItem of
       MechStatus ->
@@ -193,14 +201,14 @@ lookupDeviceSession devices uuid =
         connected <- readTVar session.sessionConnected
         pure (Just (session, connected))
 
-runCommandLoop :: BridgeConfig -> StatusVersions -> StatusSnapshots -> PendingCommands -> TVar (Maybe PendingCommand) -> DeviceSession -> ConnectedBridgeDevice -> IO CommandLoopResult
-runCommandLoop config statusVersions statusSnapshots pendingCommands inFlightCommand session connected =
+runCommandLoop :: BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> PendingCommands -> TVar (Maybe PendingCommand) -> DeviceSession -> ConnectedBridgeDevice -> IO CommandLoopResult
+runCommandLoop config statusVersions statusSnapshots lastActivity pendingCommands inFlightCommand session connected =
   takePendingCommandBlocking pendingCommands session >>= drain
   where
     uuid = session.sessionDevice.deviceUuid
     drain nextCommand = do
       atomically (writeTVar inFlightCommand (Just nextCommand))
-      result <- executeCommandUnlocked config statusVersions statusSnapshots pendingCommands uuid connected nextCommand
+      result <- executeCommandUnlocked config statusVersions statusSnapshots lastActivity pendingCommands uuid connected nextCommand
       atomically (writeTVar inFlightCommand Nothing)
       case result of
         CommandDone ->
@@ -217,28 +225,35 @@ data CommandExecutionResult
   | CommandNeedsReconnect !ReconnectReason
   | CommandConnectionClosed !SomeException
 
-executeCommandUnlocked :: BridgeConfig -> StatusVersions -> StatusSnapshots -> PendingCommands -> UUID -> ConnectedBridgeDevice -> PendingCommand -> IO CommandExecutionResult
-executeCommandUnlocked config statusVersions statusSnapshots pendingCommands uuid connected command = do
-  readStatusSnapshot statusSnapshots uuid >>= \case
-    Just status
-      | not command.pendingForceSend && commandSatisfied command.pendingLockCommand status ->
-          debug config ("skipping command already satisfied for " <> UUID.toString uuid <> ": command=" <> show command.pendingLockCommand <> ", status=" <> show status) *> pure CommandDone
-    _ -> do
-      beforeStatusVersion <- readStatusVersion statusVersions uuid
-      result <- Exception.tryAny (sendCommandAndWaitForStatus config statusVersions statusSnapshots uuid connected command.pendingLockCommand beforeStatusVersion)
-      case result of
-        Right True -> pure CommandDone
-        Right False -> do
-          requeued <- requeueFailedCommand config pendingCommands uuid command.pendingLockCommand "post-command status timeout"
-          if requeued
-            then pure (CommandNeedsReconnect ReconnectPostCommandTimeout)
-            else pure CommandDone
-        Left err -> do
-          debug config ("command failed for " <> UUID.toString uuid <> ": " <> show err)
-          _ <- requeueFailedCommand config pendingCommands uuid command.pendingLockCommand "command failure"
-          if isTransportClosedException err
-            then pure (CommandConnectionClosed err)
-            else pure (CommandNeedsReconnect (ReconnectCommandFailure err))
+executeCommandUnlocked :: BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> PendingCommands -> UUID -> ConnectedBridgeDevice -> PendingCommand -> IO CommandExecutionResult
+executeCommandUnlocked config statusVersions statusSnapshots lastActivity pendingCommands uuid connected command =
+  commandIdleAge lastActivity uuid >>= \case
+    Just idleAge | idleAge >= commandIdleRefreshAge -> do
+      requeued <- requeueFailedCommand config pendingCommands uuid command.pendingLockCommand ("idle Sesame session refresh before command after " <> show (round (realToFrac idleAge :: Double) :: Int) <> "s idle")
+      if requeued
+        then pure (CommandNeedsReconnect ReconnectIdleBeforeCommand)
+        else pure CommandDone
+    _ ->
+      readStatusSnapshot statusSnapshots uuid >>= \case
+        Just status
+          | not command.pendingForceSend && commandSatisfied command.pendingLockCommand status ->
+              debug config ("skipping command already satisfied for " <> UUID.toString uuid <> ": command=" <> show command.pendingLockCommand <> ", status=" <> show status) *> pure CommandDone
+        _ -> do
+          beforeStatusVersion <- readStatusVersion statusVersions uuid
+          result <- Exception.tryAny (sendCommandAndWaitForStatus config statusVersions statusSnapshots uuid connected command.pendingLockCommand beforeStatusVersion)
+          case result of
+            Right True -> pure CommandDone
+            Right False -> do
+              requeued <- requeueFailedCommand config pendingCommands uuid command.pendingLockCommand "post-command status timeout"
+              if requeued
+                then pure (CommandNeedsReconnect ReconnectPostCommandTimeout)
+                else pure CommandDone
+            Left err -> do
+              debug config ("command failed for " <> UUID.toString uuid <> ": " <> show err)
+              _ <- requeueFailedCommand config pendingCommands uuid command.pendingLockCommand "command failure"
+              if isTransportClosedException err
+                then pure (CommandConnectionClosed err)
+                else pure (CommandNeedsReconnect (ReconnectCommandFailure err))
 
 sendCommandAndWaitForStatus :: BridgeConfig -> StatusVersions -> StatusSnapshots -> UUID -> ConnectedBridgeDevice -> LockCommand -> Int -> IO Bool
 sendCommandAndWaitForStatus config statusVersions statusSnapshots uuid connected command beforeStatusVersion = do
@@ -396,6 +411,16 @@ recordStatus statusVersions statusSnapshots uuid statusPayload =
     modifyTVar' statusSnapshots (Map.insert key statusPayload)
   where
     key = deviceKey uuid
+
+recordActivity :: LastActivity -> UUID -> IO ()
+recordActivity lastActivity uuid = do
+  now <- getCurrentTime
+  atomically (modifyTVar' lastActivity (Map.insert (deviceKey uuid) now))
+
+commandIdleAge :: LastActivity -> UUID -> IO (Maybe NominalDiffTime)
+commandIdleAge lastActivity uuid = do
+  now <- getCurrentTime
+  fmap (diffUTCTime now) . Map.lookup (deviceKey uuid) <$> readTVarIO lastActivity
 
 readStatusVersion :: StatusVersions -> UUID -> IO Int
 readStatusVersion statusVersions uuid =
@@ -569,6 +594,9 @@ commandSettleMicros = 500000
 
 queuedCommandSettleMicros :: Int
 queuedCommandSettleMicros = 250000
+
+commandIdleRefreshAge :: NominalDiffTime
+commandIdleRefreshAge = 10
 
 deviceKey :: UUID -> Text
 deviceKey = T.pack . UUID.toString
