@@ -66,6 +66,7 @@ setupBluezTransport client config = do
   queue <- newTQueueIO
   state <- newTVarIO emptyReassembly
   recentMessages <- newTVarIO []
+  closed <- newMVar False
   device <- requireField "devicePath" resolved.devicePath
   writeChar <- requireField "writeCharacteristicPath" resolved.writeCharacteristicPath
   notifyChar <- requireField "notifyCharacteristicPath" resolved.notifyCharacteristicPath
@@ -82,17 +83,22 @@ setupBluezTransport client config = do
         SesameTransport
           { sendBle = \encrypted bytes -> sendFragments config client writeChar encrypted bytes
           , receiveBle = atomically (readTQueue queue)
-          , closeBle = closeBluezTransport client config device notifyChar
+          , closeBle = closeBluezTransport closed client config device notifyChar
           , advertisement = pure (maybe (Left AdvertisementUnavailable) (either (Left . TransportCallFailed . show) Right . decodeAdvertisement) resolved.manufacturerData)
           }
-    (closeBluezTransport client config device notifyChar)
+    (closeBluezTransport closed client config device notifyChar)
 
-closeBluezTransport :: DBus.Client -> BluezConfig -> ObjectPath -> ObjectPath -> IO ()
-closeBluezTransport client config device notifyChar = do
-  debug config "closing BlueZ transport"
-  _ <- Exception.tryAny (callNoBody config.discoveryTimeoutSeconds client notifyChar "org.bluez.GattCharacteristic1" "StopNotify")
-  _ <- Exception.tryAny (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
-  DBus.disconnect client
+closeBluezTransport :: MVar Bool -> DBus.Client -> BluezConfig -> ObjectPath -> ObjectPath -> IO ()
+closeBluezTransport closed client config device notifyChar =
+  modifyMVar_ closed \alreadyClosed ->
+    if alreadyClosed
+      then pure True
+      else do
+        debug config "closing BlueZ transport"
+        _ <- Exception.tryAny (callNoBody config.discoveryTimeoutSeconds client notifyChar "org.bluez.GattCharacteristic1" "StopNotify")
+        _ <- Exception.tryAny (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
+        DBus.disconnect client
+        pure True
 
 type BluezProperties = Map String Variant
 
