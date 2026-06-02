@@ -283,11 +283,11 @@ requeueFailedCommand config devices pendingCommands uuid connected shouldDisconn
       requeued <-
         if pending
           then pure False
-          else modifyTVar' pendingCommands (Map.insert key (newPendingCommand command True)) *> pure True
+          else modifyTVar' pendingCommands (Map.insert key (newPendingCommand command False)) *> pure True
       STMMap.insert Nothing key devices
       pure requeued
   if requeued
-    then debug config ("requeued command after " <> reason <> " for " <> UUID.toString uuid <> ": command=" <> show command)
+    then debug config ("requeued command after " <> reason <> " for " <> UUID.toString uuid <> ": command=" <> show command <> ", force_send=False")
     else debug config ("left newer pending command after " <> reason <> " for " <> UUID.toString uuid <> ": failed_command=" <> show command)
   when shouldDisconnect do
     _ <- Exception.tryAny connected.disconnectSesameClient
