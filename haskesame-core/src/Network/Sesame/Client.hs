@@ -5,11 +5,10 @@ module Network.Sesame.Client (
   newSesame5Client,
   newSesame5ClientWith,
   login,
-  readMechStatus,
   lock,
   unlock,
   toggle,
-  setLockPosition,
+  setMechSetting,
   setAutoLockDuration,
   readPublish,
 ) where
@@ -19,7 +18,6 @@ import Control.Concurrent.STM (TQueue, TVar, atomically, check, newTQueueIO, new
 import Control.Exception.Safe qualified as Exception
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
-import Data.Int (Int16)
 import Data.Text (Text)
 import Data.Word (Word16, Word8)
 import GHC.Generics (Generic)
@@ -79,11 +77,6 @@ login client secret = do
     Success -> waitLoginPublishes client *> pure (timestampLE response.responsePayload)
     rc -> atomically (writeTVar client.cipherVar Nothing) *> Exception.throwIO (SesameProtocolException (OperationFailed Login rc))
 
-readMechStatus :: Sesame5Client -> IO Sesame5MechStatus
-readMechStatus client = do
-  response <- sendEncryptedResponse client (SesameCommand MechStatus BS.empty)
-  either (Exception.throwIO . SesameProtocolException) pure (decodeSesame5MechStatus response.responsePayload)
-
 lock :: Sesame5Client -> Text -> IO ()
 lock client name = sendEncrypted client (SesameCommand Lock (createHistoryTag name).unHistoryTag)
 
@@ -93,9 +86,9 @@ unlock client name = sendEncrypted client (SesameCommand Unlock (createHistoryTa
 toggle :: Sesame5Client -> Text -> IO ()
 toggle client name = sendEncrypted client (SesameCommand Toggle (createHistoryTag name).unHistoryTag)
 
-setLockPosition :: Sesame5Client -> Int16 -> Int16 -> IO ()
-setLockPosition client lockPosition unlockPosition =
-  sendEncrypted client (SesameCommand MechSetting (int16LE lockPosition <> int16LE unlockPosition))
+setMechSetting :: Sesame5Client -> Sesame5MechSetting -> IO ()
+setMechSetting client setting =
+  sendEncrypted client (SesameCommand MechSetting (encodeSesame5MechSetting setting))
 
 setAutoLockDuration :: Sesame5Client -> Word16 -> IO ()
 setAutoLockDuration client seconds =
@@ -270,9 +263,6 @@ timestampLE bytes = sum [fromIntegral (BS.index bytes i) * (256 ^ i) | i <- [0 .
 
 word16LE :: Word16 -> ByteString
 word16LE n = BS.pack [fromIntegral n, fromIntegral (n `div` 256)]
-
-int16LE :: Int16 -> ByteString
-int16LE = word16LE . fromIntegral @Int16 @Word16
 
 itemKey :: ItemCode -> Word8
 itemKey = itemCodeToWord8

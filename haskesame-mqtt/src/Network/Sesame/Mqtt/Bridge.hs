@@ -21,7 +21,7 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Data.Time (NominalDiffTime, defaultTimeLocale, diffUTCTime, formatTime, getCurrentTime, getZonedTime)
+import Data.Time (defaultTimeLocale, formatTime, getZonedTime)
 import Data.UUID (UUID)
 import Data.UUID qualified as UUID
 import Network.Mqtt.Client.AutoReconnect qualified as Mqtt
@@ -64,8 +64,6 @@ data PendingCommand = PendingCommand
   , pendingForceSend :: !Bool
   }
 
-data ReconnectWait = ReconnectWaitElapsed | ReconnectWaitInterruptedByCommand
-
 superviseDevice :: Mqtt.AutoClient -> BridgeConfig -> DeviceMap -> CommandLocks -> StatusVersions -> StatusSnapshots -> PendingCommands -> BridgeDevice -> IO ()
 superviseDevice mqtt config deviceMap commandLocks statusVersions statusSnapshots pendingCommands device =
   go minReconnectDelayMicros
@@ -79,7 +77,6 @@ superviseDevice mqtt config deviceMap commandLocks statusVersions statusSnapshot
           waitReconnectDelay config device.deviceUuid reconnectDelayCapMicros
           go (nextReconnectDelayMicros reconnectDelayCapMicros)
         Right connected -> do
-          connectedAt <- getCurrentTime
           debug config ("Sesame connected " <> UUID.toString device.deviceUuid)
           atomically (STMMap.insert (Just connected) (deviceKey device.deviceUuid) deviceMap)
           publishResult <-
@@ -87,25 +84,15 @@ superviseDevice mqtt config deviceMap commandLocks statusVersions statusSnapshot
               ( withAsync
                   (runPendingCommand config deviceMap commandLocks statusVersions statusSnapshots pendingCommands device.deviceUuid connected)
                   \_ ->
-                    race_
-                      (publishDeviceStatus mqtt config statusVersions statusSnapshots device.deviceUuid connected.sesameClient)
-                      (monitorDeviceConnectivity mqtt config commandLocks statusVersions statusSnapshots device.deviceUuid connected.sesameClient)
+                    publishDeviceStatus mqtt config statusVersions statusSnapshots device.deviceUuid connected.sesameClient
                       `Exception.finally` do
                         atomically (STMMap.insert Nothing (deviceKey device.deviceUuid) deviceMap)
                         _ <- Exception.tryAny connected.disconnectSesameClient
                         pure ()
               )
-          disconnectedAt <- getCurrentTime
           debug config ("Sesame disconnected " <> UUID.toString device.deviceUuid <> ": " <> either show (const "status loop ended") publishResult)
-          reconnectWait <- waitBeforeReconnect config pendingCommands device.deviceUuid reconnectDelayCapMicros
-          let stableConnection = disconnectedAt `diffUTCTime` connectedAt >= stableConnectionSeconds
-              nextDelayCap =
-                case reconnectWait of
-                  ReconnectWaitInterruptedByCommand -> minReconnectDelayMicros
-                  ReconnectWaitElapsed
-                    | stableConnection -> minReconnectDelayMicros
-                    | otherwise -> nextReconnectDelayMicros reconnectDelayCapMicros
-          go nextDelayCap
+          waitBeforeReconnect config pendingCommands device.deviceUuid
+          go minReconnectDelayMicros
 
 publishDeviceStatus :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> UUID -> Sesame.Sesame5Client -> IO ()
 publishDeviceStatus mqtt config statusVersions statusSnapshots uuid sesame =
@@ -122,26 +109,6 @@ publishDeviceStatus mqtt config statusVersions statusSnapshots uuid sesame =
             recordStatus statusVersions statusSnapshots uuid statusPayload
             publishStatus mqtt config uuid statusPayload
       _ -> pure ()
-
-monitorDeviceConnectivity :: Mqtt.AutoClient -> BridgeConfig -> CommandLocks -> StatusVersions -> StatusSnapshots -> UUID -> Sesame.Sesame5Client -> IO ()
-monitorDeviceConnectivity mqtt config commandLocks statusVersions statusSnapshots uuid sesame =
-  forever do
-    threadDelay connectivityCheckMicros
-    case Map.lookup (deviceKey uuid) commandLocks of
-      Nothing -> pure ()
-      Just commandLock ->
-        tryTakeMVar commandLock >>= \case
-          Nothing -> debug config ("skipping Sesame connectivity check while command is active " <> UUID.toString uuid)
-          Just () ->
-            Exception.finally
-              do
-                debug config ("checking Sesame connectivity " <> UUID.toString uuid)
-                status <- Sesame.readMechStatus sesame
-                debug config ("Sesame connectivity check succeeded " <> UUID.toString uuid <> ": " <> describeMechStatus status)
-                let statusPayload = statusFromMech status
-                recordStatus statusVersions statusSnapshots uuid statusPayload
-                publishStatus mqtt config uuid statusPayload
-              (putMVar commandLock ())
 
 consumeCommands :: Mqtt.AutoClient -> BridgeConfig -> DeviceMap -> CommandLocks -> StatusVersions -> StatusSnapshots -> PendingCommands -> IO ()
 consumeCommands mqtt config devices commandLocks statusVersions statusSnapshots pendingCommands =
@@ -240,7 +207,7 @@ runPendingCommand config devices commandLocks statusVersions statusSnapshots pen
       if initialStatusSeen
         then debug config ("initial Sesame status observed before queued command for " <> UUID.toString uuid)
         else debug config ("timed out waiting for initial Sesame status before queued command for " <> UUID.toString uuid)
-      threadDelay commandSettleMicros
+      threadDelay initialStatusSettleMicros
     else pure ()
   pending <- atomically do
     let key = deviceKey uuid
@@ -419,25 +386,22 @@ waitForCommandStatus statusVersions statusSnapshots uuid command beforeStatusVer
     )
     `orTimeout` timedOut
 
-waitBeforeReconnect :: BridgeConfig -> PendingCommands -> UUID -> Int -> IO ReconnectWait
-waitBeforeReconnect config pendingCommands uuid reconnectDelayCapMicros = do
+waitBeforeReconnect :: BridgeConfig -> PendingCommands -> UUID -> IO ()
+waitBeforeReconnect config pendingCommands uuid = do
   pendingNow <- hasPendingCommand pendingCommands uuid
   if pendingNow
     then waitForCommandReconnectSettle config uuid
     else do
-      reconnectDelay <- randomReconnectDelayMicros reconnectDelayCapMicros
-      debug config ("waiting before reconnect for " <> UUID.toString uuid <> ": delay_us=" <> show reconnectDelay <> ", cap_us=" <> show reconnectDelayCapMicros)
-      reconnectNow <- waitForPendingCommandOrDelay pendingCommands uuid reconnectDelay
-      if reconnectNow
-        then waitForCommandReconnectSettle config uuid
-        else pure ReconnectWaitElapsed
+      debug config ("waiting for queued command before reconnecting Sesame device " <> UUID.toString uuid)
+      waitForPendingCommand pendingCommands uuid
+      waitForCommandReconnectSettle config uuid
 
-waitForCommandReconnectSettle :: BridgeConfig -> UUID -> IO ReconnectWait
+waitForCommandReconnectSettle :: BridgeConfig -> UUID -> IO ()
 waitForCommandReconnectSettle config uuid = do
   debug config ("queued command pending; waiting for BlueZ reconnect settle " <> UUID.toString uuid <> ": delay_us=" <> show commandReconnectSettleMicros)
   threadDelay commandReconnectSettleMicros
   debug config ("queued command pending; reconnecting Sesame device now " <> UUID.toString uuid)
-  pure ReconnectWaitInterruptedByCommand
+  pure ()
 
 waitReconnectDelay :: BridgeConfig -> UUID -> Int -> IO ()
 waitReconnectDelay config uuid reconnectDelayCapMicros = do
@@ -453,20 +417,11 @@ nextReconnectDelayMicros :: Int -> Int
 nextReconnectDelayMicros reconnectDelayCapMicros =
   min maxReconnectDelayMicros (max minReconnectDelayMicros reconnectDelayCapMicros * 2)
 
-waitForPendingCommandOrDelay :: PendingCommands -> UUID -> Int -> IO Bool
-waitForPendingCommandOrDelay pendingCommands uuid timeoutMicros = do
-  timedOut <- registerDelay timeoutMicros
-  atomically
-    ( ( do
-          pending <- Map.member (deviceKey uuid) <$> readTVar pendingCommands
-          check pending
-          pure True
-      )
-        `orElse` do
-          timedOutNow <- readTVar timedOut
-          check timedOutNow
-          pure False
-    )
+waitForPendingCommand :: PendingCommands -> UUID -> IO ()
+waitForPendingCommand pendingCommands uuid =
+  atomically do
+    pending <- Map.member (deviceKey uuid) <$> readTVar pendingCommands
+    check pending
 
 orTimeout :: STM Bool -> TVar Bool -> IO Bool
 orTimeout waitAction timedOut =
@@ -496,13 +451,7 @@ maxReconnectDelayMicros :: Int
 maxReconnectDelayMicros = 3000000
 
 commandReconnectSettleMicros :: Int
-commandReconnectSettleMicros = 750000
-
-connectivityCheckMicros :: Int
-connectivityCheckMicros = 10000000
-
-stableConnectionSeconds :: NominalDiffTime
-stableConnectionSeconds = 30
+commandReconnectSettleMicros = 1000000
 
 reconnectStatusWaitMicros :: Int
 reconnectStatusWaitMicros = 5000000
@@ -511,7 +460,10 @@ commandStatusWaitMicros :: Int
 commandStatusWaitMicros = 3000000
 
 commandSettleMicros :: Int
-commandSettleMicros = 1500000
+commandSettleMicros = 500000
+
+initialStatusSettleMicros :: Int
+initialStatusSettleMicros = 500000
 
 deviceKey :: UUID -> Text
 deviceKey = T.pack . UUID.toString

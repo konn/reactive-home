@@ -12,6 +12,7 @@ module Network.Sesame.Codec (
   decodePublish,
   decodeAdvertisement,
   decodeSesame5MechStatus,
+  encodeSesame5MechSetting,
   decodeSesame5MechSetting,
   itemCodeToWord8,
   opCodeToWord8,
@@ -123,6 +124,12 @@ decodeSesame5MechStatus bytes
     le16 = readWord16LE bytes
     sle16 = fromIntegral @Word16 @Int16 . readWord16LE bytes
 
+encodeSesame5MechSetting :: Sesame5MechSetting -> ByteString
+encodeSesame5MechSetting setting =
+  int16LE setting.lockPosition
+    <> int16LE setting.unlockPosition
+    <> word16LE setting.autoLockDuration
+
 decodeSesame5MechSetting :: ByteString -> Either SesameProtocolError Sesame5MechSetting
 decodeSesame5MechSetting bytes
   | BS.length bytes /= 6 = Left (InvalidLength "mech setting" 6 (BS.length bytes))
@@ -133,6 +140,12 @@ decodeSesame5MechSetting bytes
 
 readWord16LE :: ByteString -> Int -> Word16
 readWord16LE bytes i = fromIntegral (BS.index bytes i) + fromIntegral (BS.index bytes (i + 1)) * 256
+
+word16LE :: Word16 -> ByteString
+word16LE n = BS.pack [fromIntegral n, fromIntegral (n `div` 256)]
+
+int16LE :: Int16 -> ByteString
+int16LE = word16LE . fromIntegral @Int16 @Word16
 
 itemCodeToWord8 :: ItemCode -> Word8
 itemCodeToWord8 = \case
