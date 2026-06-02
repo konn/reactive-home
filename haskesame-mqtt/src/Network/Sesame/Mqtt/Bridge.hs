@@ -16,6 +16,7 @@ import Control.Exception.Safe qualified as Exception
 import Control.Monad (forever, when)
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LBS
+import Data.List (isInfixOf)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
@@ -105,8 +106,8 @@ runDeviceSession mqtt config statusVersions statusSnapshots pendingCommands sess
       case connectedResult of
         Left err -> do
           debug config ("Sesame connection failed for " <> UUID.toString uuid <> ": " <> show err)
-          waitReconnectDelay config uuid reconnectDelayCapMicros
-          go (nextReconnectDelayMicros reconnectDelayCapMicros)
+          nextDelayCapMicros <- waitReconnectDelayAfterFailure config uuid reconnectDelayCapMicros err
+          go (nextReconnectDelayMicros nextDelayCapMicros)
         Right connected -> do
           debug config ("Sesame connected " <> UUID.toString uuid)
           atomically (writeTVar session.sessionConnected True)
@@ -481,6 +482,20 @@ waitReconnectDelay config uuid reconnectDelayCapMicros = do
   debug config ("waiting after failed reconnect for " <> UUID.toString uuid <> ": delay_us=" <> show reconnectDelay <> ", cap_us=" <> show reconnectDelayCapMicros)
   threadDelay reconnectDelay
 
+waitReconnectDelayAfterFailure :: BridgeConfig -> UUID -> Int -> SomeException -> IO Int
+waitReconnectDelayAfterFailure config uuid reconnectDelayCapMicros err
+  | isBluezLocalAbort err = do
+      let reconnectDelayCapMicros' = max bluezLocalAbortReconnectDelayCapMicros reconnectDelayCapMicros
+      reconnectDelay <- randomRIO (bluezLocalAbortMinReconnectDelayMicros, reconnectDelayCapMicros')
+      debug config ("waiting after BlueZ local connection abort for " <> UUID.toString uuid <> ": delay_us=" <> show reconnectDelay <> ", cap_us=" <> show reconnectDelayCapMicros')
+      threadDelay reconnectDelay
+      pure reconnectDelayCapMicros'
+  | otherwise = waitReconnectDelay config uuid reconnectDelayCapMicros *> pure reconnectDelayCapMicros
+
+isBluezLocalAbort :: SomeException -> Bool
+isBluezLocalAbort err =
+  "le-connection-abort-by-local" `isInfixOf` show err
+
 randomReconnectDelayMicros :: Int -> IO Int
 randomReconnectDelayMicros reconnectDelayCapMicros =
   randomRIO (0, max 0 reconnectDelayCapMicros)
@@ -530,6 +545,12 @@ minReconnectDelayMicros = 10000
 
 maxReconnectDelayMicros :: Int
 maxReconnectDelayMicros = 3000000
+
+bluezLocalAbortReconnectDelayCapMicros :: Int
+bluezLocalAbortReconnectDelayCapMicros = 1000000
+
+bluezLocalAbortMinReconnectDelayMicros :: Int
+bluezLocalAbortMinReconnectDelayMicros = 500000
 
 commandReconnectSettleMicros :: Int
 commandReconnectSettleMicros = 1000000

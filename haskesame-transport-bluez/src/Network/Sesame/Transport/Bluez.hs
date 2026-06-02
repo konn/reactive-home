@@ -67,6 +67,7 @@ setupBluezTransport client config = do
   state <- newTVarIO emptyReassembly
   recentMessages <- newTVarIO []
   closed <- newMVar False
+  remoteClosed <- newTVarIO False
   device <- requireField "devicePath" resolved.devicePath
   writeChar <- requireField "writeCharacteristicPath" resolved.writeCharacteristicPath
   notifyChar <- requireField "notifyCharacteristicPath" resolved.notifyCharacteristicPath
@@ -74,7 +75,7 @@ setupBluezTransport client config = do
     do
       debug config ("resolved device=" <> formatObjectPath device <> ", write=" <> formatObjectPath writeChar <> ", notify=" <> formatObjectPath notifyChar)
       _ <- DBus.addMatch client (propertiesChangedRule notifyChar) (handleSignal config queue state recentMessages)
-      _ <- DBus.addMatch client (propertiesChangedRule device) (handleDeviceSignal config queue)
+      _ <- DBus.addMatch client (propertiesChangedRule device) (handleDeviceSignal config queue remoteClosed)
       debug config "starting BlueZ notifications"
       callNoBody config.discoveryTimeoutSeconds client notifyChar "org.bluez.GattCharacteristic1" "StartNotify"
       debug config "BlueZ notifications started"
@@ -83,20 +84,25 @@ setupBluezTransport client config = do
         SesameTransport
           { sendBle = \encrypted bytes -> sendFragments config client writeChar encrypted bytes
           , receiveBle = atomically (readTQueue queue)
-          , closeBle = closeBluezTransport closed client config device notifyChar
+          , closeBle = closeBluezTransport closed remoteClosed client config device notifyChar
           , advertisement = pure (maybe (Left AdvertisementUnavailable) (either (Left . TransportCallFailed . show) Right . decodeAdvertisement) resolved.manufacturerData)
           }
-    (closeBluezTransport closed client config device notifyChar)
+    (closeBluezTransport closed remoteClosed client config device notifyChar)
 
-closeBluezTransport :: MVar Bool -> DBus.Client -> BluezConfig -> ObjectPath -> ObjectPath -> IO ()
-closeBluezTransport closed client config device notifyChar =
+closeBluezTransport :: MVar Bool -> TVar Bool -> DBus.Client -> BluezConfig -> ObjectPath -> ObjectPath -> IO ()
+closeBluezTransport closed remoteClosed client config device notifyChar =
   modifyMVar_ closed \alreadyClosed ->
     if alreadyClosed
       then pure True
       else do
-        debug config "closing BlueZ transport"
+        disconnected <- readTVarIO remoteClosed
+        debug config (if disconnected then "cleaning up BlueZ transport after device disconnect" else "closing BlueZ transport")
         _ <- Exception.tryAny (callNoBody config.discoveryTimeoutSeconds client notifyChar "org.bluez.GattCharacteristic1" "StopNotify")
-        _ <- Exception.tryAny (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
+        if disconnected
+          then pure ()
+          else do
+            _ <- Exception.tryAny (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
+            pure ()
         DBus.disconnect client
         pure True
 
@@ -468,8 +474,8 @@ readCharacteristicValue client path = do
       | Just value <- fromVariant body -> pure (variantBytes value)
     _ -> fail "unexpected BlueZ Properties.Get Value response"
 
-handleDeviceSignal :: BluezConfig -> TQueue (Either SesameTransportError (ByteString, Bool)) -> Signal -> IO ()
-handleDeviceSignal config queue signalMessage =
+handleDeviceSignal :: BluezConfig -> TQueue (Either SesameTransportError (ByteString, Bool)) -> TVar Bool -> Signal -> IO ()
+handleDeviceSignal config queue remoteClosed signalMessage =
   case signalBody signalMessage of
     [ifaceVar, changedVar, _invalidatedVar]
       | Just (iface :: String) <- fromVariant ifaceVar
@@ -478,7 +484,9 @@ handleDeviceSignal config queue signalMessage =
       , Just connectedVar <- Map.lookup "Connected" changed
       , Just (connected :: Bool) <- fromVariant connectedVar
       , not connected ->
-          debug config "BlueZ device disconnected" *> atomically (writeTQueue queue (Left TransportClosed))
+          debug config "BlueZ device disconnected" *> atomically do
+            writeTVar remoteClosed True
+            writeTQueue queue (Left TransportClosed)
     _ -> pure ()
 
 sendFragments :: BluezConfig -> DBus.Client -> ObjectPath -> Bool -> ByteString -> IO (Either SesameTransportError ())
