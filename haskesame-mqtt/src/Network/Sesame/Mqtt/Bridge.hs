@@ -87,7 +87,9 @@ superviseDevice mqtt config deviceMap commandLocks statusVersions statusSnapshot
               ( withAsync
                   (runPendingCommand config deviceMap commandLocks statusVersions statusSnapshots pendingCommands device.deviceUuid connected)
                   \_ ->
-                    publishDeviceStatus mqtt config statusVersions statusSnapshots device.deviceUuid connected.sesameClient
+                    race_
+                      (publishDeviceStatus mqtt config statusVersions statusSnapshots device.deviceUuid connected.sesameClient)
+                      (monitorDeviceConnectivity mqtt config commandLocks statusVersions statusSnapshots device.deviceUuid connected.sesameClient)
                       `Exception.finally` do
                         atomically (STMMap.insert Nothing (deviceKey device.deviceUuid) deviceMap)
                         _ <- Exception.tryAny connected.disconnectSesameClient
@@ -120,6 +122,26 @@ publishDeviceStatus mqtt config statusVersions statusSnapshots uuid sesame =
             recordStatus statusVersions statusSnapshots uuid statusPayload
             publishStatus mqtt config uuid statusPayload
       _ -> pure ()
+
+monitorDeviceConnectivity :: Mqtt.AutoClient -> BridgeConfig -> CommandLocks -> StatusVersions -> StatusSnapshots -> UUID -> Sesame.Sesame5Client -> IO ()
+monitorDeviceConnectivity mqtt config commandLocks statusVersions statusSnapshots uuid sesame =
+  forever do
+    threadDelay connectivityCheckMicros
+    case Map.lookup (deviceKey uuid) commandLocks of
+      Nothing -> pure ()
+      Just commandLock ->
+        tryTakeMVar commandLock >>= \case
+          Nothing -> debug config ("skipping Sesame connectivity check while command is active " <> UUID.toString uuid)
+          Just () ->
+            Exception.finally
+              do
+                debug config ("checking Sesame connectivity " <> UUID.toString uuid)
+                status <- Sesame.readMechStatus sesame
+                debug config ("Sesame connectivity check succeeded " <> UUID.toString uuid <> ": " <> describeMechStatus status)
+                let statusPayload = statusFromMech status
+                recordStatus statusVersions statusSnapshots uuid statusPayload
+                publishStatus mqtt config uuid statusPayload
+              (putMVar commandLock ())
 
 consumeCommands :: Mqtt.AutoClient -> BridgeConfig -> DeviceMap -> CommandLocks -> StatusVersions -> StatusSnapshots -> PendingCommands -> IO ()
 consumeCommands mqtt config devices commandLocks statusVersions statusSnapshots pendingCommands =
@@ -475,6 +497,9 @@ maxReconnectDelayMicros = 3000000
 
 commandReconnectSettleMicros :: Int
 commandReconnectSettleMicros = 750000
+
+connectivityCheckMicros :: Int
+connectivityCheckMicros = 10000000
 
 stableConnectionSeconds :: NominalDiffTime
 stableConnectionSeconds = 30

@@ -5,6 +5,7 @@ module Network.Sesame.Client (
   newSesame5Client,
   newSesame5ClientWith,
   login,
+  readMechStatus,
   lock,
   unlock,
   toggle,
@@ -78,6 +79,11 @@ login client secret = do
     Success -> waitLoginPublishes client *> pure (timestampLE response.responsePayload)
     rc -> atomically (writeTVar client.cipherVar Nothing) *> Exception.throwIO (SesameProtocolException (OperationFailed Login rc))
 
+readMechStatus :: Sesame5Client -> IO Sesame5MechStatus
+readMechStatus client = do
+  response <- sendEncryptedResponse client (SesameCommand MechStatus BS.empty)
+  either (Exception.throwIO . SesameProtocolException) pure (decodeSesame5MechStatus response.responsePayload)
+
 lock :: Sesame5Client -> Text -> IO ()
 lock client name = sendEncrypted client (SesameCommand Lock (createHistoryTag name).unHistoryTag)
 
@@ -101,10 +107,17 @@ readPublish client = do
 
 sendEncrypted :: Sesame5Client -> SesameCommand -> IO ()
 sendEncrypted client command = do
+  response <- sendEncryptedResponse client command
+  case response.resultCode of
+    Success -> pure ()
+    rc -> Exception.throwIO (SesameProtocolException (OperationFailed command.itemCode rc))
+
+sendEncryptedResponse :: Sesame5Client -> SesameCommand -> IO SesameResponse
+sendEncryptedResponse client command = do
   cipher <- atomically (readTVar client.cipherVar) >>= maybe (Exception.throwIO (SesameCryptoException AuthenticationFailed)) pure
   response <- sendCommand client (Just cipher) command
   case response.resultCode of
-    Success -> pure ()
+    Success -> pure response
     rc -> Exception.throwIO (SesameProtocolException (OperationFailed command.itemCode rc))
 
 sendCommand :: Sesame5Client -> Maybe Crypto.SesameCipher -> SesameCommand -> IO SesameResponse
