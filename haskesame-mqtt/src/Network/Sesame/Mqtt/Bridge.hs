@@ -596,7 +596,7 @@ queuedCommandSettleMicros :: Int
 queuedCommandSettleMicros = 250000
 
 commandIdleRefreshAge :: NominalDiffTime
-commandIdleRefreshAge = 10
+commandIdleRefreshAge = 30
 
 deviceKey :: UUID -> Text
 deviceKey = T.pack . UUID.toString
