@@ -12,6 +12,7 @@ import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (async, forConcurrently_, race, race_, withAsync)
 import Control.Concurrent.MVar (MVar, newMVar, putMVar, tryTakeMVar)
 import Control.Concurrent.STM (STM, TVar, atomically, check, modifyTVar', newTVarIO, orElse, readTVar, readTVarIO, registerDelay)
+import Control.Exception (SomeException)
 import Control.Exception.Safe qualified as Exception
 import Control.Monad (forever, when)
 import Data.ByteString (ByteString)
@@ -27,6 +28,7 @@ import Data.UUID qualified as UUID
 import Network.Mqtt.Client.AutoReconnect qualified as Mqtt
 import Network.Sesame.Client qualified as Sesame
 import Network.Sesame.Codec (decodeSesame5MechStatus)
+import Network.Sesame.Exception (SesameException (SesameTransportException), SesameTransportError (TransportClosed))
 import Network.Sesame.Mqtt.Types
 import Network.Sesame.Types (ItemCode (MechStatus), Sesame5MechStatus (..), SesamePublish (..))
 import StmContainers.Map qualified as STMMap
@@ -62,7 +64,6 @@ type PendingCommands = TVar (Map Text PendingCommand)
 data PendingCommand = PendingCommand
   { pendingLockCommand :: !LockCommand
   , pendingForceSend :: !Bool
-  , pendingSameSessionRetries :: !Int
   }
 
 newPendingCommand :: LockCommand -> Bool -> PendingCommand
@@ -70,7 +71,6 @@ newPendingCommand command forceSend =
   PendingCommand
     { pendingLockCommand = command
     , pendingForceSend = forceSend
-    , pendingSameSessionRetries = 0
     }
 
 data ReconnectWait = ReconnectWaitElapsed | ReconnectWaitInterruptedByCommand
@@ -185,10 +185,10 @@ executeCommandUnlocked config devices statusVersions statusSnapshots pendingComm
       result <- Exception.tryAny (sendCommandAndWaitForStatus config statusVersions statusSnapshots uuid connected command.pendingLockCommand beforeStatusVersion)
       case result of
         Right True -> pure True
-        Right False -> retryOrRequeueFailedCommand config devices pendingCommands uuid connected command "post-command status timeout"
+        Right False -> requeueFailedCommand config devices pendingCommands uuid connected True command.pendingLockCommand "post-command status timeout" *> pure False
         Left err -> do
           debug config ("command failed for " <> UUID.toString uuid <> ": " <> show err)
-          requeueFailedCommand config devices pendingCommands uuid connected command.pendingLockCommand "command failure"
+          requeueFailedCommand config devices pendingCommands uuid connected (not (isTransportClosedException err)) command.pendingLockCommand "command failure"
           pure False
 
 sendCommandAndWaitForStatus :: BridgeConfig -> StatusVersions -> StatusSnapshots -> UUID -> ConnectedBridgeDevice -> LockCommand -> Int -> IO Bool
@@ -257,8 +257,8 @@ restartCommandWorkerIfPending config devices statusVersions statusSnapshots pend
             _ <- async (commandWorker config devices statusVersions statusSnapshots pendingCommands (Just commandLock) uuid connected command)
             pure ()
 
-requeueFailedCommand :: BridgeConfig -> DeviceMap -> PendingCommands -> UUID -> ConnectedBridgeDevice -> LockCommand -> String -> IO ()
-requeueFailedCommand config devices pendingCommands uuid connected command reason = do
+requeueFailedCommand :: BridgeConfig -> DeviceMap -> PendingCommands -> UUID -> ConnectedBridgeDevice -> Bool -> LockCommand -> String -> IO ()
+requeueFailedCommand config devices pendingCommands uuid connected shouldDisconnect command reason = do
   requeued <-
     atomically do
       let key = deviceKey uuid
@@ -272,19 +272,16 @@ requeueFailedCommand config devices pendingCommands uuid connected command reaso
   if requeued
     then debug config ("requeued command after " <> reason <> " for " <> UUID.toString uuid <> ": command=" <> show command)
     else debug config ("left newer pending command after " <> reason <> " for " <> UUID.toString uuid <> ": failed_command=" <> show command)
-  _ <- Exception.tryAny connected.disconnectSesameClient
+  when shouldDisconnect do
+    _ <- Exception.tryAny connected.disconnectSesameClient
+    pure ()
   pure ()
 
-retryOrRequeueFailedCommand :: BridgeConfig -> DeviceMap -> PendingCommands -> UUID -> ConnectedBridgeDevice -> PendingCommand -> String -> IO Bool
-retryOrRequeueFailedCommand config devices pendingCommands uuid connected command reason
-  | command.pendingSameSessionRetries < maxSameSessionCommandRetries = do
-      let retryCommand = command {pendingForceSend = True, pendingSameSessionRetries = command.pendingSameSessionRetries + 1}
-      atomically (modifyTVar' pendingCommands (Map.insert (deviceKey uuid) retryCommand))
-      debug config ("retrying command on same Sesame session after " <> reason <> " for " <> UUID.toString uuid <> ": command=" <> show command.pendingLockCommand <> ", retry=" <> show retryCommand.pendingSameSessionRetries)
-      pure True
-  | otherwise = do
-      requeueFailedCommand config devices pendingCommands uuid connected command.pendingLockCommand reason
-      pure False
+isTransportClosedException :: SomeException -> Bool
+isTransportClosedException err =
+  case Exception.fromException err of
+    Just (SesameTransportException TransportClosed) -> True
+    _ -> False
 
 publishStatus :: Mqtt.AutoClient -> BridgeConfig -> UUID -> StatusPayload -> IO ()
 publishStatus mqtt config uuid status = do
@@ -482,9 +479,6 @@ commandSettleMicros = 500000
 
 queuedCommandSettleMicros :: Int
 queuedCommandSettleMicros = 250000
-
-maxSameSessionCommandRetries :: Int
-maxSameSessionCommandRetries = 1
 
 deviceKey :: UUID -> Text
 deviceKey = T.pack . UUID.toString
