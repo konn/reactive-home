@@ -201,13 +201,8 @@ runPendingCommand config devices commandLocks statusVersions statusSnapshots pen
   pendingAtConnect <- hasPendingCommand pendingCommands uuid
   if pendingAtConnect
     then do
-      beforeInitialStatus <- readStatusVersion statusVersions uuid
-      debug config ("waiting for initial Sesame status before queued command for " <> UUID.toString uuid)
-      initialStatusSeen <- waitForStatusVersion statusVersions uuid beforeInitialStatus reconnectStatusWaitMicros
-      if initialStatusSeen
-        then debug config ("initial Sesame status observed before queued command for " <> UUID.toString uuid)
-        else debug config ("timed out waiting for initial Sesame status before queued command for " <> UUID.toString uuid)
-      threadDelay initialStatusSettleMicros
+      debug config ("queued command pending after Sesame login; settling before command for " <> UUID.toString uuid <> ": delay_us=" <> show queuedCommandSettleMicros)
+      threadDelay queuedCommandSettleMicros
     else pure ()
   pending <- atomically do
     let key = deviceKey uuid
@@ -363,16 +358,6 @@ showHex2 value =
       n = fromIntegral value
    in [digits !! (n `div` 16), digits !! (n `mod` 16)]
 
-waitForStatusVersion :: StatusVersions -> UUID -> Int -> Int -> IO Bool
-waitForStatusVersion statusVersions uuid beforeStatusVersion timeoutMicros = do
-  timedOut <- registerDelay timeoutMicros
-  ( do
-      versions <- readTVar statusVersions
-      check (Map.findWithDefault 0 (deviceKey uuid) versions > beforeStatusVersion)
-      pure True
-    )
-    `orTimeout` timedOut
-
 waitForCommandStatus :: StatusVersions -> StatusSnapshots -> UUID -> LockCommand -> Int -> Int -> IO Bool
 waitForCommandStatus statusVersions statusSnapshots uuid command beforeStatusVersion timeoutMicros = do
   timedOut <- registerDelay timeoutMicros
@@ -453,17 +438,14 @@ maxReconnectDelayMicros = 3000000
 commandReconnectSettleMicros :: Int
 commandReconnectSettleMicros = 1000000
 
-reconnectStatusWaitMicros :: Int
-reconnectStatusWaitMicros = 5000000
-
 commandStatusWaitMicros :: Int
 commandStatusWaitMicros = 3000000
 
 commandSettleMicros :: Int
 commandSettleMicros = 500000
 
-initialStatusSettleMicros :: Int
-initialStatusSettleMicros = 500000
+queuedCommandSettleMicros :: Int
+queuedCommandSettleMicros = 250000
 
 deviceKey :: UUID -> Text
 deviceKey = T.pack . UUID.toString
