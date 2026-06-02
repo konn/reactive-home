@@ -46,13 +46,14 @@ runBridge mqtt config devices = do
   statusSnapshots <- newTVarIO Map.empty
   lastActivity <- newTVarIO Map.empty
   lastCommandActivity <- newTVarIO Map.empty
+  lastCommandSuccess <- newTVarIO Map.empty
   pendingCommands <- newTVarIO Map.empty
   sessions <- traverse newDeviceSession devices
   atomically (mapM_ (\session -> STMMap.insert session (deviceKey session.sessionDevice.deviceUuid) deviceMap) sessions)
   debug config ("starting bridge for " <> show (length devices) <> " Sesame device(s)")
   race_
     (consumeCommands mqtt config deviceMap lastCommandActivity pendingCommands)
-    (forConcurrently_ sessions (runDeviceSession mqtt config statusVersions statusSnapshots lastActivity lastCommandActivity pendingCommands))
+    (forConcurrently_ sessions (runDeviceSession mqtt config statusVersions statusSnapshots lastActivity lastCommandActivity lastCommandSuccess pendingCommands))
 
 type DeviceMap = STMMap.Map Text DeviceSession
 
@@ -63,6 +64,8 @@ type StatusSnapshots = TVar (Map Text StatusPayload)
 type LastActivity = TVar (Map Text UTCTime)
 
 type LastCommandActivity = TVar (Map Text UTCTime)
+
+type LastCommandSuccess = TVar (Map Text (LockCommand, UTCTime))
 
 type PendingCommands = TVar (Map Text PendingCommand)
 
@@ -103,8 +106,8 @@ data ReconnectReason
   | ReconnectCommandFailure !SomeException
   | ReconnectIdleBeforeCommand
 
-runDeviceSession :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> LastCommandActivity -> PendingCommands -> DeviceSession -> IO ()
-runDeviceSession mqtt config statusVersions statusSnapshots lastActivity lastCommandActivity pendingCommands session =
+runDeviceSession :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> LastCommandActivity -> LastCommandSuccess -> PendingCommands -> DeviceSession -> IO ()
+runDeviceSession mqtt config statusVersions statusSnapshots lastActivity lastCommandActivity lastCommandSuccess pendingCommands session =
   go minReconnectDelayMicros
   where
     uuid = session.sessionDevice.deviceUuid
@@ -122,7 +125,7 @@ runDeviceSession mqtt config statusVersions statusSnapshots lastActivity lastCom
           recordActivity lastActivity uuid
           result <-
             Exception.tryAny
-              ( runConnectedSession mqtt config statusVersions statusSnapshots lastActivity pendingCommands session connected
+              ( runConnectedSession mqtt config statusVersions statusSnapshots lastActivity lastCommandSuccess pendingCommands session connected
                   `Exception.finally` do
                     atomically (writeTVar session.sessionConnected False)
                     disconnectConnected config uuid connected
@@ -131,14 +134,14 @@ runDeviceSession mqtt config statusVersions statusSnapshots lastActivity lastCom
           _ <- waitBeforeReconnect config lastCommandActivity pendingCommands uuid
           go minReconnectDelayMicros
 
-runConnectedSession :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> PendingCommands -> DeviceSession -> ConnectedBridgeDevice -> IO ConnectedResult
-runConnectedSession mqtt config statusVersions statusSnapshots lastActivity pendingCommands session connected = do
+runConnectedSession :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> LastCommandSuccess -> PendingCommands -> DeviceSession -> ConnectedBridgeDevice -> IO ConnectedResult
+runConnectedSession mqtt config statusVersions statusSnapshots lastActivity lastCommandSuccess pendingCommands session connected = do
   inFlightCommand <- newTVarIO Nothing
   settleQueuedCommandAfterLogin config pendingCommands uuid
   withAsync (publishDeviceStatus mqtt config statusVersions statusSnapshots lastActivity uuid connected.sesameClient) \statusAsync ->
     race
       (waitCatch statusAsync)
-      (ConnectedByCommandLoop <$> runCommandLoop config statusVersions statusSnapshots lastActivity pendingCommands inFlightCommand session connected)
+      (ConnectedByCommandLoop <$> runCommandLoop config statusVersions statusSnapshots lastActivity lastCommandSuccess pendingCommands inFlightCommand session connected)
       >>= \case
         Left statusResult -> do
           requeueInFlightAfterStatusEnd config pendingCommands uuid inFlightCommand statusResult
@@ -205,14 +208,14 @@ lookupDeviceSession devices uuid =
         connected <- readTVar session.sessionConnected
         pure (Just (session, connected))
 
-runCommandLoop :: BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> PendingCommands -> TVar (Maybe PendingCommand) -> DeviceSession -> ConnectedBridgeDevice -> IO CommandLoopResult
-runCommandLoop config statusVersions statusSnapshots lastActivity pendingCommands inFlightCommand session connected =
+runCommandLoop :: BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> LastCommandSuccess -> PendingCommands -> TVar (Maybe PendingCommand) -> DeviceSession -> ConnectedBridgeDevice -> IO CommandLoopResult
+runCommandLoop config statusVersions statusSnapshots lastActivity lastCommandSuccess pendingCommands inFlightCommand session connected =
   takePendingCommandBlocking pendingCommands session >>= drain
   where
     uuid = session.sessionDevice.deviceUuid
     drain nextCommand = do
       atomically (writeTVar inFlightCommand (Just nextCommand))
-      result <- executeCommandUnlocked config statusVersions statusSnapshots lastActivity pendingCommands uuid connected nextCommand
+      result <- executeCommandUnlocked config statusVersions statusSnapshots lastActivity lastCommandSuccess pendingCommands uuid connected nextCommand
       atomically (writeTVar inFlightCommand Nothing)
       case result of
         CommandDone ->
@@ -229,8 +232,8 @@ data CommandExecutionResult
   | CommandNeedsReconnect !ReconnectReason
   | CommandConnectionClosed !SomeException
 
-executeCommandUnlocked :: BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> PendingCommands -> UUID -> ConnectedBridgeDevice -> PendingCommand -> IO CommandExecutionResult
-executeCommandUnlocked config statusVersions statusSnapshots lastActivity pendingCommands uuid connected command =
+executeCommandUnlocked :: BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> LastCommandSuccess -> PendingCommands -> UUID -> ConnectedBridgeDevice -> PendingCommand -> IO CommandExecutionResult
+executeCommandUnlocked config statusVersions statusSnapshots lastActivity lastCommandSuccess pendingCommands uuid connected command =
   commandIdleAge lastActivity uuid >>= \case
     Just idleAge | idleAge >= commandIdleRefreshAge -> do
       requeued <- requeueFailedCommand config pendingCommands uuid command.pendingLockCommand ("idle Sesame session refresh before command after " <> show (round (realToFrac idleAge :: Double) :: Int) <> "s idle")
@@ -244,20 +247,27 @@ executeCommandUnlocked config statusVersions statusSnapshots lastActivity pendin
               debug config ("skipping command already satisfied for " <> UUID.toString uuid <> ": command=" <> show command.pendingLockCommand <> ", status=" <> show status) *> pure CommandDone
         _ -> do
           beforeStatusVersion <- readStatusVersion statusVersions uuid
-          result <- Exception.tryAny (sendCommandAndWaitForStatus config statusVersions statusSnapshots uuid connected command.pendingLockCommand beforeStatusVersion)
-          case result of
-            Right True -> pure CommandDone
-            Right False -> do
-              requeued <- requeueFailedCommand config pendingCommands uuid command.pendingLockCommand "post-command status timeout"
-              if requeued
-                then pure (CommandNeedsReconnect ReconnectPostCommandTimeout)
-                else pure CommandDone
-            Left err -> do
-              debug config ("command failed for " <> UUID.toString uuid <> ": " <> show err)
-              _ <- requeueFailedCommand config pendingCommands uuid command.pendingLockCommand "command failure"
-              if isTransportClosedException err
-                then pure (CommandConnectionClosed err)
-                else pure (CommandNeedsReconnect (ReconnectCommandFailure err))
+          settleFragileCommandWindow config statusVersions lastCommandSuccess uuid command.pendingLockCommand beforeStatusVersion
+          readStatusSnapshot statusSnapshots uuid >>= \case
+            Just status
+              | not command.pendingForceSend && commandSatisfied command.pendingLockCommand status ->
+                  debug config ("skipping command satisfied during pre-send settle for " <> UUID.toString uuid <> ": command=" <> show command.pendingLockCommand <> ", status=" <> show status) *> pure CommandDone
+            _ -> do
+              beforeStatusVersionAfterSettle <- readStatusVersion statusVersions uuid
+              result <- Exception.tryAny (sendCommandAndWaitForStatus config statusVersions statusSnapshots uuid connected command.pendingLockCommand beforeStatusVersionAfterSettle)
+              case result of
+                Right True -> recordCommandSuccess lastCommandSuccess uuid command.pendingLockCommand *> pure CommandDone
+                Right False -> do
+                  requeued <- requeueFailedCommand config pendingCommands uuid command.pendingLockCommand "post-command status timeout"
+                  if requeued
+                    then pure (CommandNeedsReconnect ReconnectPostCommandTimeout)
+                    else pure CommandDone
+                Left err -> do
+                  debug config ("command failed for " <> UUID.toString uuid <> ": " <> show err)
+                  _ <- requeueFailedCommand config pendingCommands uuid command.pendingLockCommand "command failure"
+                  if isTransportClosedException err
+                    then pure (CommandConnectionClosed err)
+                    else pure (CommandNeedsReconnect (ReconnectCommandFailure err))
 
 sendCommandAndWaitForStatus :: BridgeConfig -> StatusVersions -> StatusSnapshots -> UUID -> ConnectedBridgeDevice -> LockCommand -> Int -> IO Bool
 sendCommandAndWaitForStatus config statusVersions statusSnapshots uuid connected command beforeStatusVersion = do
@@ -298,6 +308,24 @@ settleQueuedCommandAfterLogin config pendingCommands uuid = do
   when pendingAtConnect do
     debug config ("queued command pending after Sesame login; settling before command for " <> UUID.toString uuid <> ": delay_us=" <> show queuedCommandSettleMicros)
     threadDelay queuedCommandSettleMicros
+
+settleFragileCommandWindow :: BridgeConfig -> StatusVersions -> LastCommandSuccess -> UUID -> LockCommand -> Int -> IO ()
+settleFragileCommandWindow config statusVersions lastCommandSuccess uuid command beforeStatusVersion =
+  readCommandSuccessAge lastCommandSuccess uuid >>= \case
+    Just (lastCommand, successAge)
+      | oppositeCommand lastCommand command
+      , successAge >= fragileCommandMinAge
+      , successAge <= fragileCommandWindow -> do
+          debug config ("settling before opposite command in post-command fragile window for " <> UUID.toString uuid <> ": previous_command=" <> show lastCommand <> ", command=" <> show command <> ", last_success_age_ms=" <> showMillis successAge <> ", delay_us=" <> show fragileCommandSettleMicros)
+          freshStatus <- waitForAnyStatusVersionChange statusVersions uuid beforeStatusVersion fragileCommandSettleMicros
+          when freshStatus do
+            debug config ("fresh Sesame status observed during fragile command settle for " <> UUID.toString uuid <> ": command=" <> show command)
+    _ -> pure ()
+
+oppositeCommand :: LockCommand -> LockCommand -> Bool
+oppositeCommand CommandLock CommandUnlock = True
+oppositeCommand CommandUnlock CommandLock = True
+oppositeCommand _ _ = False
 
 hasPendingCommand :: PendingCommands -> UUID -> IO Bool
 hasPendingCommand pendingCommands uuid =
@@ -426,6 +454,16 @@ commandIdleAge lastActivity uuid = do
   now <- getCurrentTime
   fmap (diffUTCTime now) . Map.lookup (deviceKey uuid) <$> readTVarIO lastActivity
 
+recordCommandSuccess :: LastCommandSuccess -> UUID -> LockCommand -> IO ()
+recordCommandSuccess lastCommandSuccess uuid command = do
+  now <- getCurrentTime
+  atomically (modifyTVar' lastCommandSuccess (Map.insert (deviceKey uuid) (command, now)))
+
+readCommandSuccessAge :: LastCommandSuccess -> UUID -> IO (Maybe (LockCommand, NominalDiffTime))
+readCommandSuccessAge lastCommandSuccess uuid = do
+  now <- getCurrentTime
+  fmap (\(command, timestamp) -> (command, diffUTCTime now timestamp)) . Map.lookup (deviceKey uuid) <$> readTVarIO lastCommandSuccess
+
 readStatusVersion :: StatusVersions -> UUID -> IO Int
 readStatusVersion statusVersions uuid =
   Map.findWithDefault 0 (deviceKey uuid) <$> readTVarIO statusVersions
@@ -473,6 +511,10 @@ showHex2 value =
       n = fromIntegral value
    in [digits !! (n `div` 16), digits !! (n `mod` 16)]
 
+showMillis :: NominalDiffTime -> String
+showMillis duration =
+  show (round (realToFrac duration * 1000 :: Double) :: Int)
+
 waitForCommandStatus :: StatusVersions -> StatusSnapshots -> UUID -> LockCommand -> Int -> Int -> IO Bool
 waitForCommandStatus statusVersions statusSnapshots uuid command beforeStatusVersion timeoutMicros = do
   timedOut <- registerDelay timeoutMicros
@@ -482,6 +524,16 @@ waitForCommandStatus statusVersions statusSnapshots uuid command beforeStatusVer
       let key = deviceKey uuid
       check (Map.findWithDefault 0 key versions > beforeStatusVersion)
       check (maybe False (commandSatisfied command) (Map.lookup key snapshots))
+      pure True
+    )
+    `orTimeout` timedOut
+
+waitForAnyStatusVersionChange :: StatusVersions -> UUID -> Int -> Int -> IO Bool
+waitForAnyStatusVersionChange statusVersions uuid beforeStatusVersion timeoutMicros = do
+  timedOut <- registerDelay timeoutMicros
+  ( do
+      versions <- readTVar statusVersions
+      check (Map.findWithDefault 0 (deviceKey uuid) versions > beforeStatusVersion)
       pure True
     )
     `orTimeout` timedOut
@@ -611,11 +663,20 @@ commandSettleMicros = 500000
 queuedCommandSettleMicros :: Int
 queuedCommandSettleMicros = 250000
 
+fragileCommandSettleMicros :: Int
+fragileCommandSettleMicros = 500000
+
 commandIdleRefreshAge :: NominalDiffTime
 commandIdleRefreshAge = 30
 
 activeCommandWindow :: NominalDiffTime
 activeCommandWindow = 60
+
+fragileCommandMinAge :: NominalDiffTime
+fragileCommandMinAge = 1
+
+fragileCommandWindow :: NominalDiffTime
+fragileCommandWindow = 5
 
 deviceKey :: UUID -> Text
 deviceKey = T.pack . UUID.toString
