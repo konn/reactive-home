@@ -10,7 +10,7 @@ module Network.Sesame.Mqtt.Bridge (
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async, forConcurrently_, race, race_, waitCatch, withAsync)
-import Control.Concurrent.STM (STM, TQueue, TVar, atomically, check, modifyTVar', newTQueueIO, newTVarIO, orElse, readTQueue, readTVar, readTVarIO, registerDelay, writeTQueue, writeTVar)
+import Control.Concurrent.STM (STM, TQueue, TVar, atomically, check, modifyTVar', newTQueueIO, newTVarIO, orElse, readTVar, readTVarIO, registerDelay, writeTQueue, writeTVar)
 import Control.Exception (SomeException)
 import Control.Exception.Safe qualified as Exception
 import Control.Monad (forever, when)
@@ -326,18 +326,15 @@ takePendingCommand pendingCommands uuid =
     pure command
 
 takePendingCommandBlocking :: PendingCommands -> DeviceSession -> IO PendingCommand
-takePendingCommandBlocking pendingCommands session =
-  atomically loop
+takePendingCommandBlocking pendingCommands session = loop
   where
     uuid = session.sessionDevice.deviceUuid
-    key = deviceKey uuid
     loop = do
-      command <- Map.lookup key <$> readTVar pendingCommands
-      case command of
-        Just pendingCommand -> do
-          modifyTVar' pendingCommands (Map.delete key)
-          pure pendingCommand
-        Nothing -> readTQueue session.sessionCommandSignal *> loop
+      takePendingCommand pendingCommands uuid >>= \case
+        Just pendingCommand -> pure pendingCommand
+        Nothing -> do
+          _ <- waitForPendingCommandOrDelay pendingCommands uuid commandLoopIdleWakeMicros
+          loop
 
 requeueFailedCommand :: BridgeConfig -> PendingCommands -> UUID -> LockCommand -> String -> IO Bool
 requeueFailedCommand config pendingCommands uuid command reason = do
@@ -604,6 +601,9 @@ passiveReconnectSettleMicros = 1500000
 
 activePassiveReconnectSettleMicros :: Int
 activePassiveReconnectSettleMicros = 250000
+
+commandLoopIdleWakeMicros :: Int
+commandLoopIdleWakeMicros = 30000000
 
 commandStatusWaitMicros :: Int
 commandStatusWaitMicros = 2500000
