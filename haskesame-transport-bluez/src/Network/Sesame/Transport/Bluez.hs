@@ -101,7 +101,10 @@ closeBluezTransport closed remoteClosed client config device notifyChar =
         if disconnected
           then pure ()
           else do
-            logBluezCloseCall config "Device1.Disconnect" (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
+            logBluezCloseCall
+              config
+              ("Device1.Disconnect: timeout_s=" <> show bluezCloseDisconnectTimeoutSeconds)
+              (callNoBody bluezCloseDisconnectTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
             pure ()
         debug config "disconnecting from system D-Bus"
         DBus.disconnect client
@@ -544,6 +547,9 @@ bluezDiscoveryRefreshMicros = 1500000
 
 bluezPostConnectTimeoutSeconds :: Int
 bluezPostConnectTimeoutSeconds = 2
+
+bluezCloseDisconnectTimeoutSeconds :: Int
+bluezCloseDisconnectTimeoutSeconds = 1
 
 debug :: BluezConfig -> String -> IO ()
 debug config message =
