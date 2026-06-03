@@ -121,7 +121,6 @@ prepareDevice debugLogging config = do
             ConnectedBridgeDevice
               { sesameClient = next.sesameClient
               , disconnectSesameClient = next.sesameTransport.closeBle
-              , abortSesameClient = next.sesameTransport.abortBle
               }
       }
 

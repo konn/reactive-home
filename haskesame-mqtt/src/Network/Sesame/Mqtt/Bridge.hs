@@ -157,17 +157,11 @@ describeConnectedResult = \case
   ConnectedByCommandLoop (CommandLoopConnectionClosed err) -> show err
 
 closeConnectedSession :: BridgeConfig -> DeviceSession -> ConnectedBridgeDevice -> Maybe ConnectedResult -> IO ()
-closeConnectedSession config session connected result = do
+closeConnectedSession config session connected _result = do
   atomically (writeTVar session.sessionConnected False)
-  case result of
-    Just (ConnectedByCommandLoop (CommandLoopReconnect ReconnectPostCommandTimeout)) -> do
-      debug config ("aborting stale Sesame session after command timeout " <> UUID.toString uuid)
-      _ <- Exception.tryAny connected.abortSesameClient
-      pure ()
-    _ -> do
-      debug config ("closing Sesame session " <> UUID.toString uuid)
-      _ <- Exception.tryAny connected.disconnectSesameClient
-      pure ()
+  debug config ("closing Sesame session " <> UUID.toString uuid)
+  _ <- Exception.tryAny connected.disconnectSesameClient
+  pure ()
   where
     uuid = session.sessionDevice.deviceUuid
 

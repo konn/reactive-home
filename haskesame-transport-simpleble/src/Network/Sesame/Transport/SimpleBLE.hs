@@ -87,12 +87,6 @@ connectSimpleBLE config = do
             _ <- Exception.tryAny (SimpleBLE.subscriptionUnsubscribe subscription)
             _ <- Exception.tryAny (SimpleBLE.peripheralDisconnect peripheral)
             pure ()
-        , abortBle = do
-            atomically (writeTVar closed True)
-            killThread monitor
-            _ <- Exception.tryAny (SimpleBLE.subscriptionUnsubscribe subscription)
-            _ <- Exception.tryAny (SimpleBLE.peripheralDisconnect peripheral)
-            pure ()
         , advertisement = pure (maybe (Left AdvertisementUnavailable) (either (Left . TransportCallFailed . show) Right . decodeAdvertisement) advertisementData)
         }
   pure (either (Left . TransportCallFailed . show) Right result)
