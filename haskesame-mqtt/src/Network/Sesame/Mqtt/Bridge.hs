@@ -202,7 +202,14 @@ consumeCommands mqtt config devices lastCommandActivity pendingCommands =
             if connected || shouldKeepDisconnectedCommand message.qos
               then do
                 recordActivity lastCommandActivity uuid
-                queuePendingCommand config pendingCommands session uuid command False ("QoS " <> show message.qos <> " command")
+                let forceSend = not connected
+                    reason =
+                      "QoS "
+                        <> show message.qos
+                        <> if forceSend
+                          then " command while Sesame session is reconnecting"
+                          else " command"
+                queuePendingCommand config pendingCommands session uuid command forceSend reason
               else debug config ("ignoring QoS0 command while Sesame device may be unavailable: " <> UUID.toString uuid)
 
 lookupDeviceSession :: DeviceMap -> UUID -> IO (Maybe (DeviceSession, Bool))
@@ -600,7 +607,7 @@ passiveReconnectSettleMicros :: Int
 passiveReconnectSettleMicros = 1500000
 
 activePassiveReconnectSettleMicros :: Int
-activePassiveReconnectSettleMicros = 250000
+activePassiveReconnectSettleMicros = 2000000
 
 commandLoopIdleWakeMicros :: Int
 commandLoopIdleWakeMicros = 30000000
