@@ -13,7 +13,7 @@ module Network.Sesame.Client (
   readPublish,
 ) where
 
-import Control.Concurrent.Async (async, link)
+import Control.Concurrent.Async (async)
 import Control.Concurrent.STM (TQueue, TVar, atomically, check, newTQueueIO, newTVarIO, orElse, readTQueue, readTVar, registerDelay, writeTQueue, writeTVar)
 import Control.Exception.Safe qualified as Exception
 import Data.ByteString (ByteString)
@@ -60,8 +60,7 @@ newSesame5ClientWith config transport = do
       <$> newTVarIO Nothing
       <*> STMMap.newIO
       <*> newTQueueIO
-  reader <- async (receiveLoop client)
-  link reader
+  _ <- async (receiveLoop client)
   pure client
 
 login :: Sesame5Client -> SecretKey -> IO Int
