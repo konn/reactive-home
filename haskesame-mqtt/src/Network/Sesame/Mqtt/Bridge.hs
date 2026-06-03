@@ -41,6 +41,7 @@ runBridge mqtt config devices = do
   filter_ <- either (fail . show) pure (commandFilter config)
   debug config ("subscribing command topic filter: " <> show filter_)
   _ <- Mqtt.subscribe1 mqtt filter_ Mqtt.QoS1
+  debug config ("MQTT command subscription ready: " <> show filter_)
   deviceMap <- STMMap.newIO
   statusVersions <- newTVarIO Map.empty
   statusSnapshots <- newTVarIO Map.empty
@@ -135,8 +136,9 @@ runDeviceSession mqtt config statusVersions statusSnapshots lastActivity lastCom
 runConnectedSession :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> PendingCommands -> DeviceSession -> ConnectedBridgeDevice -> IO ConnectedResult
 runConnectedSession mqtt config statusVersions statusSnapshots lastActivity pendingCommands session connected = do
   inFlightCommand <- newTVarIO Nothing
+  firstStatusPublished <- newTVarIO False
   settleQueuedCommandAfterLogin config pendingCommands uuid
-  withAsync (publishDeviceStatus mqtt config statusVersions statusSnapshots lastActivity uuid connected.sesameClient) \statusAsync ->
+  withAsync (publishDeviceStatus mqtt config statusVersions statusSnapshots lastActivity firstStatusPublished uuid connected.sesameClient) \statusAsync ->
     race
       (waitCatch statusAsync)
       (ConnectedByCommandLoop <$> runCommandLoop config statusVersions statusSnapshots pendingCommands inFlightCommand session connected)
@@ -165,8 +167,8 @@ closeConnectedSession config session connected _result = do
   where
     uuid = session.sessionDevice.deviceUuid
 
-publishDeviceStatus :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> UUID -> Sesame.Sesame5Client -> IO ()
-publishDeviceStatus mqtt config statusVersions statusSnapshots lastActivity uuid sesame =
+publishDeviceStatus :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> TVar Bool -> UUID -> Sesame.Sesame5Client -> IO ()
+publishDeviceStatus mqtt config statusVersions statusSnapshots lastActivity firstStatusPublished uuid sesame =
   forever do
     SesamePublish publishItem payload <- Sesame.readPublish sesame
     recordActivity lastActivity uuid
@@ -180,7 +182,18 @@ publishDeviceStatus mqtt config statusVersions statusSnapshots lastActivity uuid
             let statusPayload = statusFromMech status
             recordStatus statusVersions statusSnapshots uuid statusPayload
             publishStatus mqtt config uuid statusPayload
+            recordFirstStatusPublished config firstStatusPublished uuid
       _ -> pure ()
+
+recordFirstStatusPublished :: BridgeConfig -> TVar Bool -> UUID -> IO ()
+recordFirstStatusPublished config firstStatusPublished uuid = do
+  shouldLog <-
+    atomically do
+      alreadyPublished <- readTVar firstStatusPublished
+      if alreadyPublished
+        then pure False
+        else writeTVar firstStatusPublished True *> pure True
+  when shouldLog (debug config ("first Sesame status publish ready " <> UUID.toString uuid))
 
 consumeCommands :: Mqtt.AutoClient -> BridgeConfig -> DeviceMap -> LastCommandActivity -> PendingCommands -> IO ()
 consumeCommands mqtt config devices lastCommandActivity pendingCommands =

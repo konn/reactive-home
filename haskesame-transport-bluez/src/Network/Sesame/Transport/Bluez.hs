@@ -80,6 +80,7 @@ setupBluezTransport client config = do
       callNoBody config.discoveryTimeoutSeconds client notifyChar "org.bluez.GattCharacteristic1" "StartNotify"
       debug config "BlueZ notifications started"
       snapshotNotifyValue client config queue state recentMessages notifyChar
+      debug config "BlueZ transport ready"
       pure
         SesameTransport
           { sendBle = \encrypted bytes -> sendFragments config client writeChar encrypted bytes

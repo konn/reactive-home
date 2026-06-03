@@ -9,6 +9,7 @@ module Network.Sesame.Mqtt.Bluez.App (
 ) where
 
 import Control.Exception qualified as Exception
+import Control.Monad (when)
 import DBus (objectPath_)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
@@ -24,7 +25,7 @@ import Network.Sesame.Mqtt (BridgeConfig (..), BridgeDevice (..), ConnectedBridg
 import Network.Sesame.Transport (SesameTransport (..))
 import Network.Sesame.Transport.Bluez (BluezConfig (..), connectBluez)
 import Network.Sesame.Types (Advertisement (..), SecretKey (..))
-import System.IO (BufferMode (LineBuffering), hSetBuffering, stderr, stdout)
+import System.IO (BufferMode (LineBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
 import Toml hiding (map)
 
 data AppConfig = AppConfig
@@ -147,6 +148,7 @@ connectDevice debugLogging config = do
           }
   sesame <- Sesame.newSesame5ClientWith (sesameClientConfig config) transport
   _ <- Sesame.login sesame (SecretKey secret) `Exception.onException` transport.closeBle
+  debug debugLogging "Sesame login complete"
   pure
     ConnectedSesameDevice
       { sesameClient = sesame
@@ -178,3 +180,8 @@ decodeHexText fieldName source =
     go (hi : lo : rest) = fromIntegral (digitToInt hi * 16 + digitToInt lo) : go rest
     go [] = []
     go [_] = error "decodeHexText: odd length checked above"
+
+debug :: Bool -> String -> IO ()
+debug debugLogging message =
+  when debugLogging do
+    hPutStrLn stderr ("[haskesame-mqtt-bluez] " <> message)
