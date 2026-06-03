@@ -219,11 +219,18 @@ runCommandLoop config statusVersions statusSnapshots pendingCommands inFlightCom
             Just pendingCommand -> do
               debug config ("running pending command for " <> UUID.toString uuid <> ": command=" <> show pendingCommand.pendingLockCommand <> ", force_send=" <> show pendingCommand.pendingForceSend)
               drain pendingCommand
+        CommandSentAndConfirmed _ ->
+          takePendingCommand pendingCommands uuid >>= \case
+            Nothing -> takePendingCommandBlocking pendingCommands session >>= drain
+            Just pendingCommand -> do
+              debug config ("running pending command for " <> UUID.toString uuid <> ": command=" <> show pendingCommand.pendingLockCommand <> ", force_send=" <> show pendingCommand.pendingForceSend)
+              drain pendingCommand
         CommandNeedsReconnect reason -> pure (CommandLoopReconnect reason)
         CommandConnectionClosed err -> pure (CommandLoopConnectionClosed err)
 
 data CommandExecutionResult
   = CommandDone
+  | CommandSentAndConfirmed !LockCommand
   | CommandNeedsReconnect !ReconnectReason
   | CommandConnectionClosed !SomeException
 
@@ -237,7 +244,7 @@ executeCommandUnlocked config statusVersions statusSnapshots pendingCommands uui
       beforeStatusVersion <- readStatusVersion statusVersions uuid
       result <- Exception.tryAny (sendCommandAndWaitForStatus config statusVersions statusSnapshots uuid connected command.pendingLockCommand beforeStatusVersion)
       case result of
-        Right True -> pure CommandDone
+        Right True -> pure (CommandSentAndConfirmed command.pendingLockCommand)
         Right False -> do
           requeued <- requeueFailedCommand config pendingCommands uuid command.pendingLockCommand "post-command status timeout"
           if requeued
@@ -591,10 +598,10 @@ commandStatusWaitMicros :: Int
 commandStatusWaitMicros = 2500000
 
 commandResponseWaitMicros :: Int
-commandResponseWaitMicros = 750000
+commandResponseWaitMicros = 400000
 
 commandResponseGraceMicros :: Int
-commandResponseGraceMicros = 750000
+commandResponseGraceMicros = 400000
 
 queuedCommandSettleMicros :: Int
 queuedCommandSettleMicros = 250000
