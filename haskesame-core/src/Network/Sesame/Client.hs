@@ -39,6 +39,7 @@ data Sesame5Client = Sesame5Client
 
 data Sesame5ClientConfig = Sesame5ClientConfig
   { commandTimeoutMicros :: !Int
+  , initialTimeoutMicros :: !Int
   }
   deriving stock (Show, Eq, Generic)
 
@@ -46,6 +47,7 @@ defaultSesame5ClientConfig :: Sesame5ClientConfig
 defaultSesame5ClientConfig =
   Sesame5ClientConfig
     { commandTimeoutMicros = 10000000
+    , initialTimeoutMicros = 2000000
     }
 
 newSesame5Client :: SesameTransport -> IO Sesame5Client
@@ -136,7 +138,7 @@ waitRegisteredResponse client expected queue timeoutMicros = do
 
 waitInitial :: Sesame5Client -> IO SessionToken
 waitInitial client = do
-  publish <- readPublish client
+  publish <- readTQueueOrTimeout client.publishQueue (Just client.config.initialTimeoutMicros) >>= either Exception.throwIO pure
   if publish.publishItemCode == Initial
     then pure (SessionToken publish.publishPayload)
     else waitInitial client
