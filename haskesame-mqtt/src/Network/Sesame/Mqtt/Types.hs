@@ -46,6 +46,7 @@ data BridgeDevice = BridgeDevice
 data ConnectedBridgeDevice = ConnectedBridgeDevice
   { sesameClient :: !Sesame5Client
   , disconnectSesameClient :: !(IO ())
+  , abortSesameClient :: !(IO ())
   }
   deriving stock (Generic)
 

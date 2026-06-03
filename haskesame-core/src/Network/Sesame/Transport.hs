@@ -11,6 +11,7 @@ data SesameTransport = SesameTransport
   { sendBle :: Bool -> ByteString -> IO (Either SesameTransportError ())
   , receiveBle :: IO (Either SesameTransportError (ByteString, Bool))
   , closeBle :: IO ()
+  , abortBle :: IO ()
   , advertisement :: IO (Either SesameTransportError Advertisement)
   }
   deriving stock (Generic)

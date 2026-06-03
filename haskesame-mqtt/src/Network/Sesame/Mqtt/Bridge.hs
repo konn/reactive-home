@@ -121,10 +121,12 @@ runDeviceSession mqtt config statusVersions statusSnapshots lastActivity lastCom
           recordActivity lastActivity uuid
           result <-
             Exception.tryAny
-              ( runConnectedSession mqtt config statusVersions statusSnapshots lastActivity pendingCommands session connected
-                  `Exception.finally` do
-                    atomically (writeTVar session.sessionConnected False)
-                    disconnectConnected config uuid connected
+              ( do
+                  sessionResult <-
+                    runConnectedSession mqtt config statusVersions statusSnapshots lastActivity pendingCommands session connected
+                      `Exception.onException` closeConnectedSession config session connected Nothing
+                  closeConnectedSession config session connected (Just sessionResult)
+                  pure sessionResult
               )
           debug config ("Sesame disconnected " <> UUID.toString uuid <> ": " <> either show describeConnectedResult result)
           _ <- waitBeforeReconnect config lastCommandActivity pendingCommands uuid
@@ -154,11 +156,20 @@ describeConnectedResult = \case
   ConnectedByCommandLoop (CommandLoopReconnect (ReconnectCommandFailure err)) -> "command requested reconnect after failure: " <> show err
   ConnectedByCommandLoop (CommandLoopConnectionClosed err) -> show err
 
-disconnectConnected :: BridgeConfig -> UUID -> ConnectedBridgeDevice -> IO ()
-disconnectConnected config uuid connected = do
-  debug config ("closing Sesame session " <> UUID.toString uuid)
-  _ <- Exception.tryAny connected.disconnectSesameClient
-  pure ()
+closeConnectedSession :: BridgeConfig -> DeviceSession -> ConnectedBridgeDevice -> Maybe ConnectedResult -> IO ()
+closeConnectedSession config session connected result = do
+  atomically (writeTVar session.sessionConnected False)
+  case result of
+    Just (ConnectedByCommandLoop (CommandLoopReconnect ReconnectPostCommandTimeout)) -> do
+      debug config ("aborting stale Sesame session after command timeout " <> UUID.toString uuid)
+      _ <- Exception.tryAny connected.abortSesameClient
+      pure ()
+    _ -> do
+      debug config ("closing Sesame session " <> UUID.toString uuid)
+      _ <- Exception.tryAny connected.disconnectSesameClient
+      pure ()
+  where
+    uuid = session.sessionDevice.deviceUuid
 
 publishDeviceStatus :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> UUID -> Sesame.Sesame5Client -> IO ()
 publishDeviceStatus mqtt config statusVersions statusSnapshots lastActivity uuid sesame =

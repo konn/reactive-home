@@ -5,7 +5,7 @@ module Network.Sesame.Transport.Bluez (
 ) where
 
 import Control.Applicative ((<|>))
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
 import Control.Concurrent.STM
 import Control.Exception (SomeException, fromException)
@@ -85,6 +85,7 @@ setupBluezTransport client config = do
           { sendBle = \encrypted bytes -> sendFragments config client writeChar encrypted bytes
           , receiveBle = atomically (readTQueue queue)
           , closeBle = closeBluezTransport closed remoteClosed client config device notifyChar
+          , abortBle = abortBluezTransport closed client config device notifyChar
           , advertisement = pure (maybe (Left AdvertisementUnavailable) (either (Left . TransportCallFailed . show) Right . decodeAdvertisement) resolved.manufacturerData)
           }
     (closeBluezTransport closed remoteClosed client config device notifyChar)
@@ -117,6 +118,35 @@ logBluezCloseCall config label action = do
   Exception.tryAny action >>= \case
     Right () -> debug config ("BlueZ close step finished: " <> label)
     Left err -> debug config ("BlueZ close step failed: " <> label <> ": " <> show err)
+
+abortBluezTransport :: MVar Bool -> DBus.Client -> BluezConfig -> ObjectPath -> ObjectPath -> IO ()
+abortBluezTransport closed client config device notifyChar =
+  modifyMVar_ closed \alreadyClosed ->
+    if alreadyClosed
+      then pure True
+      else do
+        debug config ("aborting stale BlueZ transport " <> formatObjectPath device)
+        logBluezCloseCall
+          config
+          ("StopNotify: timeout_s=" <> show bluezCloseDisconnectTimeoutSeconds)
+          (callNoBody bluezCloseDisconnectTimeoutSeconds client notifyChar "org.bluez.GattCharacteristic1" "StopNotify")
+        _ <- forkIO (backgroundDisconnectBluezDevice config device)
+        debug config "disconnecting stale BlueZ D-Bus client without waiting for Device1.Disconnect"
+        DBus.disconnect client
+        debug config "stale BlueZ transport aborted"
+        pure True
+
+backgroundDisconnectBluezDevice :: BluezConfig -> ObjectPath -> IO ()
+backgroundDisconnectBluezDevice config device = do
+  debug config ("background BlueZ disconnect starting " <> formatObjectPath device)
+  result <- Exception.tryAny do
+    client <- DBus.connectSystem
+    Exception.finally
+      (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
+      (DBus.disconnect client)
+  case result of
+    Right () -> debug config ("background BlueZ disconnect finished " <> formatObjectPath device)
+    Left err -> debug config ("background BlueZ disconnect failed " <> formatObjectPath device <> ": " <> show err)
 
 type BluezProperties = Map String Variant
 
