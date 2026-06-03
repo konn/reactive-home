@@ -8,15 +8,19 @@ repository policy.
 ## Overview
 
 reactive-home is an experiment combining home automation with modern FRP. It is a Cabal
-monorepo (`packages: */*.cabal`) with two packages:
+monorepo (`packages: */*.cabal`) with several package families:
 
-- **`hasquitto-core/`** — a from-scratch, low-level **MQTT v5 client** library; the mature
-  part of the repo. Read `hasquitto-core/ARCHITECTURE.md` for the full design rationale.
+- **`hasquitto-*`** — a from-scratch, low-level **MQTT v5 client** library plus reconnect
+  and integration helpers.
+- **`haskesame-*` / `simpleble-hs/`** — a Sesame 5 BLE client, BLE transports, and MQTT
+  bridge executables.
 - **`reactive-home/`** — the FRP home-automation layer (built on **Rhine**, bridged into
   the **Effectful** monad), consuming MQTT via hasquitto-core. Early-stage scaffolding —
   `reactive-home/app/Main.hs` is currently a stub.
 
-`reactive-home` depends on `hasquitto-core`.
+Read `ARCHITECTURE.md` first for the repository map, then the relevant family document
+under `ARCHITECTURES/` before making design changes. You can grasp the current
+architecture from those files, and you must update them after design changes.
 
 ## Build / test / run
 
@@ -86,6 +90,11 @@ cabal test hasquitto-core-integration --test-options '--mqtt-host localhost --mq
 - Prefer symlinks over copied files when both agents can consume the same artifact safely.
 
 ## Architecture
+
+Read `ARCHITECTURE.md` for the repository-level package map. Family-level design documents
+live under `ARCHITECTURES/`; update the relevant document in the same change when altering
+package boundaries, concurrency models, protocol recovery, retry semantics, topic/payload
+contracts, or public configuration surfaces.
 
 ### hasquitto-core
 Read `hasquitto-core/ARCHITECTURE.md` before touching the codec or client engine. In brief:
