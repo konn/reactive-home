@@ -101,7 +101,6 @@ data CommandLoopResult
 data ReconnectReason
   = ReconnectPostCommandTimeout
   | ReconnectCommandFailure !SomeException
-  | ReconnectIdleBeforeCommand
 
 runDeviceSession :: Mqtt.AutoClient -> BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> LastCommandActivity -> PendingCommands -> DeviceSession -> IO ()
 runDeviceSession mqtt config statusVersions statusSnapshots lastActivity lastCommandActivity pendingCommands session =
@@ -138,7 +137,7 @@ runConnectedSession mqtt config statusVersions statusSnapshots lastActivity pend
   withAsync (publishDeviceStatus mqtt config statusVersions statusSnapshots lastActivity uuid connected.sesameClient) \statusAsync ->
     race
       (waitCatch statusAsync)
-      (ConnectedByCommandLoop <$> runCommandLoop config statusVersions statusSnapshots lastActivity pendingCommands inFlightCommand session connected)
+      (ConnectedByCommandLoop <$> runCommandLoop config statusVersions statusSnapshots pendingCommands inFlightCommand session connected)
       >>= \case
         Left statusResult -> do
           requeueInFlightAfterStatusEnd config pendingCommands uuid inFlightCommand statusResult
@@ -153,7 +152,6 @@ describeConnectedResult = \case
   ConnectedByStatusLoop (Right ()) -> "status loop ended"
   ConnectedByCommandLoop (CommandLoopReconnect ReconnectPostCommandTimeout) -> "command requested reconnect after post-command status timeout"
   ConnectedByCommandLoop (CommandLoopReconnect (ReconnectCommandFailure err)) -> "command requested reconnect after failure: " <> show err
-  ConnectedByCommandLoop (CommandLoopReconnect ReconnectIdleBeforeCommand) -> "command requested reconnect before sending on idle Sesame session"
   ConnectedByCommandLoop (CommandLoopConnectionClosed err) -> show err
 
 disconnectConnected :: BridgeConfig -> UUID -> ConnectedBridgeDevice -> IO ()
@@ -205,14 +203,14 @@ lookupDeviceSession devices uuid =
         connected <- readTVar session.sessionConnected
         pure (Just (session, connected))
 
-runCommandLoop :: BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> PendingCommands -> TVar (Maybe PendingCommand) -> DeviceSession -> ConnectedBridgeDevice -> IO CommandLoopResult
-runCommandLoop config statusVersions statusSnapshots lastActivity pendingCommands inFlightCommand session connected =
+runCommandLoop :: BridgeConfig -> StatusVersions -> StatusSnapshots -> PendingCommands -> TVar (Maybe PendingCommand) -> DeviceSession -> ConnectedBridgeDevice -> IO CommandLoopResult
+runCommandLoop config statusVersions statusSnapshots pendingCommands inFlightCommand session connected =
   takePendingCommandBlocking pendingCommands session >>= drain
   where
     uuid = session.sessionDevice.deviceUuid
     drain nextCommand = do
       atomically (writeTVar inFlightCommand (Just nextCommand))
-      result <- executeCommandUnlocked config statusVersions statusSnapshots lastActivity pendingCommands uuid connected nextCommand
+      result <- executeCommandUnlocked config statusVersions statusSnapshots pendingCommands uuid connected nextCommand
       atomically (writeTVar inFlightCommand Nothing)
       case result of
         CommandDone ->
@@ -229,42 +227,35 @@ data CommandExecutionResult
   | CommandNeedsReconnect !ReconnectReason
   | CommandConnectionClosed !SomeException
 
-executeCommandUnlocked :: BridgeConfig -> StatusVersions -> StatusSnapshots -> LastActivity -> PendingCommands -> UUID -> ConnectedBridgeDevice -> PendingCommand -> IO CommandExecutionResult
-executeCommandUnlocked config statusVersions statusSnapshots lastActivity pendingCommands uuid connected command =
-  commandIdleAge lastActivity uuid >>= \case
-    Just idleAge | idleAge >= commandIdleRefreshAge -> do
-      requeued <- requeueFailedCommand config pendingCommands uuid command.pendingLockCommand ("idle Sesame session refresh before command after " <> show (round (realToFrac idleAge :: Double) :: Int) <> "s idle")
-      if requeued
-        then pure (CommandNeedsReconnect ReconnectIdleBeforeCommand)
-        else pure CommandDone
-    _ ->
-      readStatusSnapshot statusSnapshots uuid >>= \case
-        Just status
-          | not command.pendingForceSend && commandSatisfied command.pendingLockCommand status ->
-              debug config ("skipping command already satisfied for " <> UUID.toString uuid <> ": command=" <> show command.pendingLockCommand <> ", status=" <> show status) *> pure CommandDone
-        _ -> do
-          beforeStatusVersion <- readStatusVersion statusVersions uuid
-          result <- Exception.tryAny (sendCommandAndWaitForStatus config statusVersions statusSnapshots uuid connected command.pendingLockCommand beforeStatusVersion)
-          case result of
-            Right True -> pure CommandDone
-            Right False -> do
-              requeued <- requeueFailedCommand config pendingCommands uuid command.pendingLockCommand "post-command status timeout"
-              if requeued
-                then pure (CommandNeedsReconnect ReconnectPostCommandTimeout)
-                else pure CommandDone
-            Left err -> do
-              debug config ("command failed for " <> UUID.toString uuid <> ": " <> show err)
-              _ <- requeueFailedCommand config pendingCommands uuid command.pendingLockCommand "command failure"
-              if isTransportClosedException err
-                then pure (CommandConnectionClosed err)
-                else pure (CommandNeedsReconnect (ReconnectCommandFailure err))
+executeCommandUnlocked :: BridgeConfig -> StatusVersions -> StatusSnapshots -> PendingCommands -> UUID -> ConnectedBridgeDevice -> PendingCommand -> IO CommandExecutionResult
+executeCommandUnlocked config statusVersions statusSnapshots pendingCommands uuid connected command =
+  readStatusSnapshot statusSnapshots uuid >>= \case
+    Just status
+      | not command.pendingForceSend && commandSatisfied command.pendingLockCommand status ->
+          debug config ("skipping command already satisfied for " <> UUID.toString uuid <> ": command=" <> show command.pendingLockCommand <> ", status=" <> show status) *> pure CommandDone
+    _ -> do
+      beforeStatusVersion <- readStatusVersion statusVersions uuid
+      result <- Exception.tryAny (sendCommandAndWaitForStatus config statusVersions statusSnapshots uuid connected command.pendingLockCommand beforeStatusVersion)
+      case result of
+        Right True -> pure CommandDone
+        Right False -> do
+          requeued <- requeueFailedCommand config pendingCommands uuid command.pendingLockCommand "post-command status timeout"
+          if requeued
+            then pure (CommandNeedsReconnect ReconnectPostCommandTimeout)
+            else pure CommandDone
+        Left err -> do
+          debug config ("command failed for " <> UUID.toString uuid <> ": " <> show err)
+          _ <- requeueFailedCommand config pendingCommands uuid command.pendingLockCommand "command failure"
+          if isTransportClosedException err
+            then pure (CommandConnectionClosed err)
+            else pure (CommandNeedsReconnect (ReconnectCommandFailure err))
 
 sendCommandAndWaitForStatus :: BridgeConfig -> StatusVersions -> StatusSnapshots -> UUID -> ConnectedBridgeDevice -> LockCommand -> Int -> IO Bool
 sendCommandAndWaitForStatus config statusVersions statusSnapshots uuid connected command beforeStatusVersion = do
   let sendAction = case command of
         CommandLock -> debug config ("locking " <> UUID.toString uuid) *> Sesame.lock connected.sesameClient config.historyName
         CommandUnlock -> debug config ("unlocking " <> UUID.toString uuid) *> Sesame.unlock connected.sesameClient config.historyName
-      statusAction = waitForCommandStatus statusVersions statusSnapshots uuid command beforeStatusVersion commandStatusWaitMicros
+      statusAction = waitForCommandStatus statusVersions statusSnapshots uuid command beforeStatusVersion commandResponseWaitMicros
   withAsync sendAction \sendAsync ->
     race (waitCatch sendAsync) statusAction >>= \case
       Left (Right ()) -> waitAfterCommand config statusVersions statusSnapshots uuid command beforeStatusVersion
@@ -273,7 +264,7 @@ sendCommandAndWaitForStatus config statusVersions statusSnapshots uuid connected
         debug config ("post-command Sesame status satisfied before command response for " <> UUID.toString uuid <> ": command=" <> show command)
         pure True
       Right False -> do
-        debug config ("timed out waiting for post-command Sesame status before command response from " <> UUID.toString uuid <> ": command=" <> show command <> "; waiting for late command response/status")
+        debug config ("timed out waiting for command response/status from " <> UUID.toString uuid <> ": command=" <> show command <> "; waiting for late command response/status")
         waitForLateCommandResponseOrStatus config statusVersions statusSnapshots uuid command beforeStatusVersion sendAsync
 
 waitForLateCommandResponseOrStatus :: BridgeConfig -> StatusVersions -> StatusSnapshots -> UUID -> LockCommand -> Int -> Async () -> IO Bool
@@ -599,14 +590,14 @@ activePassiveReconnectSettleMicros = 250000
 commandStatusWaitMicros :: Int
 commandStatusWaitMicros = 2500000
 
+commandResponseWaitMicros :: Int
+commandResponseWaitMicros = 750000
+
 commandResponseGraceMicros :: Int
-commandResponseGraceMicros = 1000000
+commandResponseGraceMicros = 750000
 
 queuedCommandSettleMicros :: Int
 queuedCommandSettleMicros = 250000
-
-commandIdleRefreshAge :: NominalDiffTime
-commandIdleRefreshAge = 30
 
 activeCommandWindow :: NominalDiffTime
 activeCommandWindow = 60
