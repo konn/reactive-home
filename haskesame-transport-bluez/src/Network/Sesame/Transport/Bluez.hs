@@ -234,16 +234,24 @@ reconnectDevice client config device objects = do
   resetStaleDeviceConnection client config device objects
   debug config ("connecting BlueZ device " <> formatObjectPath device)
   connectResult <- Exception.tryAny (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Connect")
-  case connectResult of
-    Right () -> pure ()
+  connectTimedOut <- case connectResult of
+    Right () -> pure False
     Left err
-      | isBluezConnectInProgress err -> debug config ("BlueZ connect already in progress " <> formatObjectPath device)
-      | isBluezConnectTimedOut err -> debug config ("BlueZ connect call timed out; waiting for pending connection " <> formatObjectPath device)
+      | isBluezConnectInProgress err -> do
+          debug config ("BlueZ connect already in progress " <> formatObjectPath device)
+          pure False
+      | isBluezConnectTimedOut err -> do
+          debug config ("BlueZ connect call timed out; waiting briefly for pending connection " <> formatObjectPath device <> ": timeout_s=" <> show bluezPostConnectTimeoutSeconds)
+          pure True
       | otherwise -> do
           debug config ("cancelling failed BlueZ connect " <> formatObjectPath device)
           ignoreErrors (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
           Exception.throwIO err
-  waitForServicesResolved client config.discoveryTimeoutSeconds device
+  let serviceTimeoutSeconds =
+        if connectTimedOut
+          then bluezPostConnectTimeoutSeconds
+          else config.discoveryTimeoutSeconds
+  waitForServicesResolved client serviceTimeoutSeconds device
     `Exception.onException` do
       debug config ("cancelling unresolved BlueZ connect " <> formatObjectPath device)
       ignoreErrors (callNoBody config.discoveryTimeoutSeconds client device "org.bluez.Device1" "Disconnect")
@@ -533,6 +541,9 @@ callTimeoutMicros timeoutSeconds = max 1 timeoutSeconds * 1000000
 
 bluezDiscoveryRefreshMicros :: Int
 bluezDiscoveryRefreshMicros = 1500000
+
+bluezPostConnectTimeoutSeconds :: Int
+bluezPostConnectTimeoutSeconds = 2
 
 debug :: BluezConfig -> String -> IO ()
 debug config message =
