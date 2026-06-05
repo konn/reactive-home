@@ -21,6 +21,8 @@ module Home.Reactive.ESPresense (
   minutes,
   hours,
   days,
+  Occupancy (..),
+  occupancyS,
   ESPresenseConfig (..),
   Room (..),
   SensorCondition (..),
@@ -56,6 +58,7 @@ import Data.Generics.Labels ()
 import Data.HashMap.Strict (HashMap)
 import Data.HashMap.Strict qualified as HM
 import Data.List ((\\))
+import Data.Maybe (fromMaybe)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Effectful
@@ -65,6 +68,7 @@ import GHC.Generics (Generic)
 import Home.Reactive.App.Types (ParseResult (..))
 import Home.Reactive.MQTT
 import Home.Reactive.Metrics.Mackerel
+import Home.Reactive.Utils (Spanned (..), movingAverageTimeout, spanned)
 import Network.Mqtt.Types.Topic (stripPrefix)
 import Text.Read (readEither)
 import Toml hiding (first, map)
@@ -136,6 +140,7 @@ sensorConditionCodec = do
 
 data Room = Room
   { devices :: ![T.Text]
+  , timeout :: !Duration
   , leave :: ![SensorCondition]
   , entry :: ![SensorCondition]
   }
@@ -144,11 +149,64 @@ data Room = Room
 conditionsCodec :: TomlCodec [SensorCondition]
 conditionsCodec = Toml.list sensorConditionCodec "conditions"
 
+conjunctS ::
+  (Time cl ~ UTCTime) =>
+  ESPresenseConfig ->
+  [SensorCondition] ->
+  ClSF (Eff es) cl ESPStatus Bool
+conjunctS cfg conds = and <$> traverse (sensorConditionS cfg) conds
+
+data Occupancy = Vacant | Occupied
+  deriving (Show, Eq, Ord, Generic)
+
+occupancyS ::
+  (Time cl ~ UTCTime, Clock (Eff es) cl) =>
+  ESPresenseConfig ->
+  Room ->
+  ClSF (Eff es) cl ESPStatus Occupancy
+occupancyS cfg room = feedback Nothing proc (event, mprev) -> do
+  case mprev of
+    Just Vacant -> do
+      entry <- conjunctS cfg room.entry -< event
+      let !new = if entry then Occupied else Vacant
+      returnA -< (new, Just new)
+    Just Occupied -> do
+      leave <- spanned <-< conjunctS cfg room.leave -< event
+      let !occ =
+            if leave.value && leave.duration >= room.timeout.seconds
+              then Vacant
+              else Occupied
+      returnA -< (occ, Just occ)
+    Nothing -> do
+      entry <- conjunctS cfg room.entry -< event
+      if entry
+        then returnA -< (Occupied, Just Occupied)
+        else returnA -< (Vacant, Just Vacant)
+
+sensorConditionS ::
+  (Time cl ~ UTCTime) =>
+  ESPresenseConfig ->
+  SensorCondition ->
+  ClSF (Eff es) cl ESPStatus Bool
+sensorConditionS cfg SensorCondition {..} =
+  case find (\s -> s.name == name) cfg.sensors of
+    Nothing -> pure False
+    Just sensor ->
+      proc stt -> do
+        dist <-
+          movingAverageTimeout
+            sensor.timeout.seconds
+            (fromMaybe 5 sensor.window)
+            -<
+              stt.distance
+        returnA -< fromMaybe False $ (<= distance) <$> dist
+
 roomRuleCodec :: TomlCodec Room
 roomRuleCodec = do
   devices <- Toml.arrayOf Toml._Text "devices" .= (.devices)
   leave <- Toml.table conditionsCodec "leave" .= (.leave)
   entry <- entryCodec .= (.entry)
+  timeout <- hasCodec "timeout" .= (.timeout)
   pure Room {..}
   where
     entryCodec :: TomlCodec [SensorCondition]
