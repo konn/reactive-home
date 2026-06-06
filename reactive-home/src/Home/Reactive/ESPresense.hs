@@ -14,6 +14,8 @@
 {-# LANGUAGE NoFieldSelectors #-}
 
 module Home.Reactive.ESPresense (
+  ESPresenseSnapshot (..),
+  espresenseSnapshotS,
   ESPSensor (..),
   Duration (),
   millis,
@@ -57,22 +59,48 @@ import Data.Foldable (find)
 import Data.Generics.Labels ()
 import Data.HashMap.Strict (HashMap)
 import Data.HashMap.Strict qualified as HM
-import Data.List ((\\))
 import Data.Maybe (fromMaybe)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Effectful
+import Effectful.Console.ByteString (Console)
+import Effectful.Console.ByteString qualified as Console
 import Effectful.Network.Mqtt (Mqtt, QoS (..), defaultPublishOptions, publish)
+import Effectful.Reader.Static (Reader)
 import FRP.Rhine
 import GHC.Generics (Generic)
 import Home.Reactive.App.Types (ParseResult (..))
 import Home.Reactive.MQTT
 import Home.Reactive.Metrics.Mackerel
-import Home.Reactive.Utils (Spanned (..), movingAverageTimeout, spanned)
+import Home.Reactive.Utils (
+  MovingAverageConfig (..),
+  Spanned (..),
+  effReaderS,
+  movingAverageS,
+  spanned,
+ )
 import Network.Mqtt.Types.Topic (stripPrefix)
 import Text.Read (readEither)
 import Toml hiding (first, map)
 import Validation (Validation (..))
+
+data ESPresenseSnapshot = ESPresenseSnapshot
+  { sensors :: HashMap ESPSensorName (HashMap ESPDeviceId ESPSensorState)
+  , rooms :: HashMap T.Text Occupancy
+  }
+  deriving (Show, Eq, Ord, Generic)
+  deriving anyclass (FromJSON, ToJSON)
+
+espresenseSnapshotS ::
+  ( Time cl ~ UTCTime
+  , Reader ESPresenseConfig :> es
+  , Console :> es
+  ) =>
+  ClSF (Eff es) cl (Maybe ESPStatus) ESPresenseSnapshot
+espresenseSnapshotS = effReaderS @ESPresenseConfig proc (stt, cfg) -> do
+  sensors <- aggregateESPStatus -< stt
+  rooms <- parallely occupancyS -< HM.map (,stt) cfg.rooms
+  returnA -< ESPresenseSnapshot {..}
 
 data ESPSensor = ESPSensor
   { name :: !T.Text
@@ -127,20 +155,21 @@ instance HasItemCodec ESPresenseConfig where
   hasItemCodec = Right espresenseConfigCodec
 
 data SensorCondition = SensorCondition
-  { name :: !T.Text
+  { sensor :: !T.Text
+  , device :: !T.Text
   , distance :: !Float
   }
   deriving (Show, Eq, Ord, Generic)
 
 sensorConditionCodec :: TomlCodec SensorCondition
 sensorConditionCodec = do
-  name <- Toml.text "name" .= (.name)
+  sensor <- Toml.text "sensor" .= (.sensor)
+  device <- Toml.text "device" .= (.device)
   distance <- numberFloat "distance" .= (.distance)
   pure SensorCondition {..}
 
 data Room = Room
-  { devices :: ![T.Text]
-  , timeout :: !Duration
+  { timeout :: !Duration
   , leave :: ![SensorCondition]
   , entry :: ![SensorCondition]
   }
@@ -149,61 +178,115 @@ data Room = Room
 conditionsCodec :: TomlCodec [SensorCondition]
 conditionsCodec = Toml.list sensorConditionCodec "conditions"
 
-conjunctS ::
-  (Time cl ~ UTCTime) =>
-  ESPresenseConfig ->
-  [SensorCondition] ->
-  ClSF (Eff es) cl ESPStatus Bool
-conjunctS cfg conds = and <$> traverse (sensorConditionS cfg) conds
+catMaybesS :: (Monad m) => a -> ClSF m cl (Maybe a) a
+catMaybesS ini = feedback ini proc (mx, prev) -> do
+  let !new = fromMaybe prev mx
+  returnA -< (new, new)
+
+evaluateCondsS ::
+  (Time cl ~ UTCTime, Reader ESPresenseConfig :> es, Console :> es) =>
+  ConditionMode ->
+  ClSF (Eff es) cl (Room, ESPStatus) Bool
+evaluateCondsS mode =
+  let ini = case mode of
+        Entry -> False
+        Leave -> True
+   in proc (room, stt) -> do
+        let conds = case mode of
+              Entry -> room.entry
+              Leave -> room.leave
+        and <$> parallely (catMaybesS ini <-< mapMaybe (sensorConditionS mode) <-< focusSensorConditionS) -< map (,stt) conds
 
 data Occupancy = Vacant | Occupied
   deriving (Show, Eq, Ord, Generic)
+  deriving anyclass (FromJSON, ToJSON)
 
 occupancyS ::
-  (Time cl ~ UTCTime, Clock (Eff es) cl) =>
-  ESPresenseConfig ->
-  Room ->
-  ClSF (Eff es) cl ESPStatus Occupancy
-occupancyS cfg room = feedback Nothing proc (event, mprev) -> do
-  case mprev of
-    Just Vacant -> do
-      entry <- conjunctS cfg room.entry -< event
-      let !new = if entry then Occupied else Vacant
-      returnA -< (new, Just new)
-    Just Occupied -> do
-      leave <- spanned <-< conjunctS cfg room.leave -< event
-      let !occ =
-            if leave.value && leave.duration >= room.timeout.seconds
-              then Vacant
-              else Occupied
-      returnA -< (occ, Just occ)
-    Nothing -> do
-      entry <- conjunctS cfg room.entry -< event
-      if entry
-        then returnA -< (Occupied, Just Occupied)
-        else returnA -< (Vacant, Just Vacant)
+  ( Time cl ~ UTCTime
+  , Reader ESPresenseConfig :> es
+  , Console :> es
+  ) =>
+  ClSF (Eff es) cl (Room, Maybe ESPStatus) Occupancy
+occupancyS = feedback Nothing proc ((room, mevt), mprev) -> do
+  case mevt of
+    Nothing -> returnA -< (Vacant, mprev)
+    Just event -> do
+      case mprev of
+        Just Vacant -> do
+          entry <- evaluateCondsS Entry -< (room, event)
+          let !new = if entry then Occupied else Vacant
+          returnA -< (new, Just new)
+        Just Occupied -> do
+          leave <- spanned <-< evaluateCondsS Leave -< (room, event)
+          let !occ =
+                if leave.value && leave.duration >= room.timeout.seconds
+                  then Vacant
+                  else Occupied
+          returnA -< (occ, Just occ)
+        Nothing -> do
+          entry <- evaluateCondsS Entry -< (room, event)
+          if entry
+            then returnA -< (Occupied, Just Occupied)
+            else returnA -< (Vacant, Just Vacant)
+
+data SensorParams = SensorParams
+  { threshold :: !Float
+  , distance :: !Float
+  , window :: !Int
+  , timeout :: !Duration
+  }
+  deriving (Show, Eq, Ord, Generic)
+
+focusSensorConditionS ::
+  (Reader ESPresenseConfig :> es) =>
+  ClSF (Eff es) cl (SensorCondition, ESPStatus) (Maybe SensorParams)
+focusSensorConditionS = effReaderS @ESPresenseConfig
+  proc ((cond, stt), cfg) -> case find (\s -> s.name == cond.sensor) cfg.sensors of
+    Just s
+      | cond.device == stt.id
+      , cond.sensor == s.name ->
+          returnA
+            -<
+              Just
+                SensorParams
+                  { threshold = cond.distance
+                  , distance = stt.distance
+                  , window = fromMaybe 5 s.window
+                  , timeout = s.timeout
+                  }
+    _ -> returnA -< Nothing
+
+data ConditionMode = Entry | Leave
+  deriving (Show, Eq, Ord, Generic)
 
 sensorConditionS ::
-  (Time cl ~ UTCTime) =>
-  ESPresenseConfig ->
-  SensorCondition ->
-  ClSF (Eff es) cl ESPStatus Bool
-sensorConditionS cfg SensorCondition {..} =
-  case find (\s -> s.name == name) cfg.sensors of
-    Nothing -> pure False
-    Just sensor ->
-      proc stt -> do
-        dist <-
-          movingAverageTimeout
-            sensor.timeout.seconds
-            (fromMaybe 5 sensor.window)
-            -<
-              stt.distance
-        returnA -< fromMaybe False $ (<= distance) <$> dist
+  ( Time cl ~ UTCTime
+  , Console :> es
+  ) =>
+  ConditionMode ->
+  ClSF (Eff es) cl SensorParams Bool
+sensorConditionS mode =
+  proc ps@SensorParams {..} -> do
+    dist <-
+      movingAverageS
+        -<
+          ( MovingAverageConfig
+              { window = window
+              , timeout = Just timeout.seconds
+              }
+          , distance
+          )
+    arrMCl (Console.putStrLn . ("ESP: " <>) . TE.encodeUtf8 . T.pack . show) -< (ps, dist)
+    let check = case mode of
+          Entry -> (<= threshold)
+          Leave -> (> threshold)
+        def = case mode of
+          Entry -> False
+          Leave -> True
+    returnA -< fromMaybe def $ check <$> dist
 
 roomRuleCodec :: TomlCodec Room
 roomRuleCodec = do
-  devices <- Toml.arrayOf Toml._Text "devices" .= (.devices)
   leave <- Toml.table conditionsCodec "leave" .= (.leave)
   entry <- entryCodec .= (.entry)
   timeout <- hasCodec "timeout" .= (.timeout)
@@ -269,16 +352,16 @@ validateConfigCodec codec =
         case codecRead codec toml of
           Failure errs -> Failure errs
           Success cfg ->
-            case firstInvalidRoomDevices cfg of
+            case firstInvalidConditionDevices cfg of
               Nothing -> pure cfg
               Just _ -> empty
     , codecWrite = codecWrite codec
     }
 
-firstInvalidRoomDevices :: ESPresenseConfig -> Maybe (T.Text, [T.Text])
-firstInvalidRoomDevices cfg =
+firstInvalidConditionDevices :: ESPresenseConfig -> Maybe (T.Text, [T.Text])
+firstInvalidConditionDevices cfg =
   find (not . null . snd) $
-    [ (roomName, room.devices \\ cfg.devices)
+    [ (roomName, filter (`notElem` cfg.devices) (map (.device) (room.leave <> room.entry)))
     | (roomName, room) <- HM.toList cfg.rooms
     ]
 
@@ -407,6 +490,7 @@ data ESPSensorState = ESPSensorState
   , interval :: {-# UNPACK #-} !Int
   }
   deriving (Show, Eq, Ord, Generic)
+  deriving anyclass (FromJSON, ToJSON)
 
 parseRawESPStatus ::
   MqttMessage ->
@@ -456,7 +540,7 @@ numOccupants :: OccupancyList -> Int
 numOccupants = HM.size
 
 occupancyListS ::
-  (Clock (Eff es) cl, Time cl ~ UTCTime) =>
+  (Time cl ~ UTCTime) =>
   ESPSensor ->
   ClSF (Eff es) cl (Maybe ESPStatus) OccupancyList
 occupancyListS room = feedback HM.empty $ proc (event, residents) -> do
@@ -471,7 +555,11 @@ occupancyListS room = feedback HM.empty $ proc (event, residents) -> do
     Just stt -> returnA -< (HM.insert stt.id stt residents', residents')
 
 aggregateESPStatus ::
-  BehaviourF (Eff es) UTCTime (Maybe ESPStatus) (HashMap (ESPSensorName, ESPDeviceId) ESPSensorState)
+  BehaviourF
+    (Eff es)
+    UTCTime
+    (Maybe ESPStatus)
+    (HashMap ESPSensorName (HashMap ESPDeviceId ESPSensorState))
 aggregateESPStatus = feedback HM.empty $ arr \(!mest, !prev) ->
   case mest of
     Nothing -> (prev, prev)
@@ -483,7 +571,7 @@ aggregateESPStatus = feedback HM.empty $ arr \(!mest, !prev) ->
               , variance = stt.var
               , interval = stt.int
               }
-          !new = HM.insert (stt.sensor, stt.id) ssst prev
+          !new = HM.insertWith HM.union stt.sensor (HM.singleton stt.id ssst) prev
        in (new, new)
 
 instance ToMackerelMetrics ESPStatus where

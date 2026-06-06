@@ -122,11 +122,11 @@ processSesame = proc msg -> do
   returnA -< reported
 
 processESP ::
-  (Console :> es) =>
+  (Console :> es, Reader ESPresenseConfig :> es) =>
   ClSF (Eff es) EffMqttClock Message (Maybe ESPStatus)
 processESP = proc msg -> do
   stat <- reportErrors <-< parseESPStatusS -< msg
-  aggregateESPStatus -< stat
+  arrMCl (Console.putStrLn . TE.encodeUtf8 . T.pack . show) <-< espresenseSnapshotS -< stat
   returnA -< stat
 
 processMqtt ::
@@ -136,8 +136,17 @@ processMqtt = proc () -> do
   msg <- tagS -< ()
   arrMCl (display Debug) -< msg
   ssm <- arr toMetrics <-< processSesame -< msg
-  esp <- arr toMetrics <-< processESP -< msg
+  esp <- arr toMetrics <-< hoistClSF withESPConfig processESP -< msg
   returnA -< ssm <> esp
+
+withESPConfig ::
+  (Reader HomeEnv :> es) =>
+  Eff (Reader ESPresenseConfig : es) c -> Eff es c
+withESPConfig action = do
+  cfg <- asks @HomeEnv (.espresense)
+  case cfg of
+    Nothing -> error "ESPConfig not found in environment"
+    Just espCfg -> runReader espCfg action
 
 type MackerelClock es = IOClock (Eff es) (Millisecond 1200)
 

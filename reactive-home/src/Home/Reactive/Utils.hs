@@ -12,46 +12,75 @@
 {-# LANGUAGE RecordWildCards #-}
 
 module Home.Reactive.Utils (
-  movingAverage,
-  movingAverageTimeout,
+  MovingAverageConfig (..),
+  movingAverageS,
   Spanned (..),
   spanned,
+  effReaderS,
+  movingAverageS_,
 ) where
 
+import Control.Monad.Trans.Class (lift)
+import Control.Monad.Trans.Reader qualified as MTL
 import Data.Sequence qualified as Seq
+import Effectful (Eff, (:>))
+import Effectful.Reader.Static (Reader)
+import Effectful.Reader.Static qualified as EffR
 import FRP.Rhine
 import GHC.Generics (Generic)
 
-movingAverage :: (Fractional a, Monad m) => Int -> ClSF m cl a a
-movingAverage n
-  | n <= 0 = error $ "movingAverage: n must be positive, but got: " <> show n
-  | otherwise = feedback Seq.empty proc (x, hist) -> do
-      let !hist' = Seq.take n (x Seq.<| hist)
-          size = Seq.length hist'
-          !avg = sum hist' / fromIntegral size
-      returnA -< (avg, hist')
+data MovingAverageConfig diff = MovingAverageConfig
+  { timeout :: !(Maybe diff)
+  , window :: !Int
+  }
+  deriving (Show, Eq, Ord, Generic)
 
-movingAverageTimeout ::
-  (Fractional a, Monad m, Ord (Diff (Time cl))) =>
-  Diff (Time cl) ->
-  Int ->
+movingAverageS ::
+  (Fractional a, Monad m, Ord (Diff (Time cl)), TimeDomain (Time cl)) =>
+  ClSF m cl (MovingAverageConfig (Diff (Time cl)), a) (Maybe a)
+movingAverageS = feedback Seq.empty proc ((cfg, x), hist) -> do
+  TimeInfo {..} <- timeInfo -< ()
+  let !window = max 1 cfg.window
+      !eligible
+        | Just timeout <- cfg.timeout = \(_, stamp) ->
+            sinceInit `difference` stamp <= timeout
+        | otherwise = const True
+      !hist'
+        | maybe False (sinceLast >) cfg.timeout = Seq.singleton (x, sinceInit)
+        | otherwise = Seq.take window $ (x, sinceInit) Seq.<| Seq.filter eligible hist
+      size = Seq.length hist'
+      !avg =
+        if size < window
+          then Nothing
+          else Just (sum (fst <$> hist') / fromIntegral size)
+  returnA -< (avg, hist')
+
+movingAverageS_ ::
+  (Fractional a, Monad m, Ord (Diff (Time cl)), TimeDomain (Time cl)) =>
+  MovingAverageConfig (Diff (Time cl)) ->
   ClSF m cl a (Maybe a)
-movingAverageTimeout timeout n
-  | n <= 0 = error $ "movingAverageTimeout: n must be positive, but got: " <> show n
-  | otherwise = feedback Seq.empty proc (x, hist) -> do
-      TimeInfo {..} <- timeInfo -< ()
-      let !hist'
-            | sinceLast > timeout = Seq.singleton x
-            | otherwise = Seq.take n $ x Seq.<| hist
-          size = Seq.length hist'
-          !avg = if size == 0 then Nothing else Just (sum hist' / fromIntegral size)
-      returnA -< (avg, hist')
+movingAverageS_ cfg = feedback Seq.empty proc (x, hist) -> do
+  TimeInfo {..} <- timeInfo -< ()
+  let !window = max 1 cfg.window
+      !eligible
+        | Just timeout <- cfg.timeout = \(_, stamp) ->
+            sinceInit `difference` stamp <= timeout
+        | otherwise = const True
+      !hist'
+        | maybe False (sinceLast >) cfg.timeout = Seq.singleton (x, sinceInit)
+        | otherwise = Seq.take window $ (x, sinceInit) Seq.<| Seq.filter eligible hist
+      size = Seq.length hist'
+      !avg =
+        if size < window
+          then Nothing
+          else Just (sum (fst <$> hist') / fromIntegral size)
+  returnA -< (avg, hist')
 
 data Spanned t a = Spanned {value :: !a, duration :: !t}
   deriving (Show, Eq, Ord, Generic, Functor, Foldable, Traversable)
 
 spanned ::
-  (Eq a, Monad m, Num (Diff (Time cl)), Clock m cl) =>
+  (Eq a, Monad m, Num (Diff (Time cl)), TimeDomain (Time cl)) =>
   ClSF m cl a (Spanned (Diff (Time cl)) a)
 spanned = feedback Nothing proc (x, prev) -> do
   TimeInfo {..} <- timeInfo -< ()
@@ -59,3 +88,12 @@ spanned = feedback Nothing proc (x, prev) -> do
     Just (x0, started)
       | x0 == x -> returnA -< (Spanned {value = x, duration = absolute `diffTime` started}, Just (x, started))
     _ -> returnA -< (Spanned {value = x, duration = 0}, Just (x, absolute))
+
+effReaderS ::
+  forall r es cl a b.
+  (Reader r :> es) =>
+  ClSF (Eff es) cl (a, r) b ->
+  ClSF (Eff es) cl a b
+effReaderS =
+  hoistS (\act -> MTL.runReaderT (commuteReaders act) =<< lift EffR.ask)
+    . readerS

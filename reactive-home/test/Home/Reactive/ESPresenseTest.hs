@@ -106,17 +106,24 @@ test_tomlParsing =
                     [
                       ( "home"
                       , Room
-                          { devices = ["watch:"]
-                          , timeout = minutes 3
+                          { timeout = minutes 3
                           , leave =
-                              [ SensorCondition {name = "entrance", distance = 6.5}
-                              , SensorCondition {name = "bedroom", distance = 5}
+                              [ SensorCondition {sensor = "entrance", device = "watch:", distance = 6.5}
+                              , SensorCondition {sensor = "bedroom", device = "watch:", distance = 5}
                               ]
-                          , entry = [SensorCondition {name = "entrance", distance = 5}]
+                          , entry = [SensorCondition {sensor = "entrance", device = "watch:", distance = 5}]
                           }
                       )
                     ]
               }
+    , testCase "rejects unknown devices in leave conditions" $
+        case decodeExact espresenseConfigCodec invalidLeaveDeviceToml of
+          Left _ -> pure ()
+          Right cfg -> assertFailure $ "expected TOML decode failure, got: " <> show cfg
+    , testCase "rejects unknown devices in entry conditions" $
+        case decodeExact espresenseConfigCodec invalidEntryDeviceToml of
+          Left _ -> pure ()
+          Right cfg -> assertFailure $ "expected TOML decode failure, got: " <> show cfg
     ]
 
 minimalRoomToml :: T.Text
@@ -178,12 +185,50 @@ roomsToml =
   name = "entrance"
 
   [rooms.home]
-  devices = ["watch:"]
   timeout = "3m"
 
   [rooms.home.leave]
-  conditions = [{ name = "entrance", distance = 6.5 }, { name = "bedroom", distance = 5 }]
+  conditions = [
+    { sensor = "entrance", device = "watch:", distance = 6.5 },
+    { sensor = "bedroom", device = "watch:", distance = 5 },
+  ]
 
   [rooms.home.entry]
-  conditions = [{ name = "entrance", distance = 5 }]
+  conditions = [{ sensor = "entrance", device = "watch:", distance = 5 }]
+  """
+
+invalidLeaveDeviceToml :: T.Text
+invalidLeaveDeviceToml =
+  """
+  devices = ["watch:"]
+
+  [[sensors]]
+  name = "entrance"
+
+  [rooms.home]
+  timeout = "3m"
+
+  [rooms.home.leave]
+  conditions = [{ sensor = "entrance", device = "unknown:", distance = 6.5 }]
+
+  [rooms.home.entry]
+  conditions = [{ sensor = "entrance", device = "watch:", distance = 5 }]
+  """
+
+invalidEntryDeviceToml :: T.Text
+invalidEntryDeviceToml =
+  """
+  devices = ["watch:"]
+
+  [[sensors]]
+  name = "entrance"
+
+  [rooms.home]
+  timeout = "3m"
+
+  [rooms.home.leave]
+  conditions = [{ sensor = "entrance", device = "watch:", distance = 6.5 }]
+
+  [rooms.home.entry]
+  conditions = [{ sensor = "entrance", device = "unknown:", distance = 5 }]
   """
