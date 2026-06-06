@@ -1,4 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE MultilineStrings #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Home.Reactive.ESPresenseTest (test_tomlParsing) where
@@ -11,6 +12,7 @@ import Home.Reactive.ESPresense (
   Room (..),
   SensorCondition (..),
   espresenseConfigCodec,
+  minutes,
   seconds,
  )
 import Test.Tasty (TestTree, testGroup)
@@ -105,6 +107,7 @@ test_tomlParsing =
                       ( "home"
                       , Room
                           { devices = ["watch:"]
+                          , timeout = minutes 3
                           , leave =
                               [ SensorCondition {name = "entrance", distance = 6.5}
                               , SensorCondition {name = "bedroom", distance = 5}
@@ -118,68 +121,69 @@ test_tomlParsing =
 
 minimalRoomToml :: T.Text
 minimalRoomToml =
-  T.unlines
-    [ "devices = []"
-    , ""
-    , "[[sensors]]"
-    , "name = \"office\""
-    ]
+  """
+  devices = []
+
+  [[sensors]]
+  name = "office"
+  """
 
 explicitRoomToml :: T.Text
 explicitRoomToml =
-  T.unlines
-    [ "devices = []"
-    , ""
-    , "[[sensors]]"
-    , "name = \"office\""
-    , "max_distance = 3.25"
-    , "skip_distance = 1.25"
-    , "skip_ms = 1234"
-    ]
+  """
+  devices = []
+
+  [[sensors]]
+  name = "office"
+  max_distance = 3.25
+  skip_distance = 1.25
+  skip_ms = 1234
+  """
 
 invalidRoomToml :: T.Text
 invalidRoomToml =
-  T.unlines
-    [ "devices = []"
-    , ""
-    , "[[sensors]]"
-    , "name = \"office\""
-    , "max_distance = \"far\""
-    ]
+  """
+  devices = []
+
+  [[sensors]]
+  name = "office"
+  max_distance = "far"
+  """
 
 realExampleToml :: T.Text
 realExampleToml =
-  T.unlines
-    [ "devices = [\"watch:\"]"
-    , ""
-    , "[[sensors]]"
-    , "name = \"room\""
-    , "max_distance = 8"
-    , "skip_distance = 0.5"
-    , "skip_ms = 5000"
-    , ""
-    , "[[sensors]]"
-    , "name = \"bedroom\""
-    , "max_distance = 8"
-    , "skip_distance = 0.5"
-    , "skip_ms = 5000"
-    , "timeout = \"5.5s\""
-    ]
+  """
+  devices = ["watch:"]
+
+  [[sensors]]
+  name = "room"
+  max_distance = 8
+  skip_distance = 0.5
+  skip_ms = 5000
+
+  [[sensors]]
+  name = "bedroom"
+  max_distance = 8
+  skip_distance = 0.5
+  skip_ms = 5000
+  timeout = "5.5s"
+  """
 
 roomsToml :: T.Text
 roomsToml =
-  T.unlines
-    [ "devices = [\"watch:\"]"
-    , ""
-    , "[[sensors]]"
-    , "name = \"entrance\""
-    , ""
-    , "[rooms.home]"
-    , "devices = [\"watch:\"]"
-    , ""
-    , "[rooms.home.leave]"
-    , "conditions = [{ name = \"entrance\", distance = 6.5 }, { name = \"bedroom\", distance = 5 }]"
-    , ""
-    , "[rooms.home.entry]"
-    , "conditions = [{ name = \"entrance\", distance = 5 }]"
-    ]
+  """
+  devices = ["watch:"]
+
+  [[sensors]]
+  name = "entrance"
+
+  [rooms.home]
+  devices = ["watch:"]
+  timeout = "3m"
+
+  [rooms.home.leave]
+  conditions = [{ name = "entrance", distance = 6.5 }, { name = "bedroom", distance = 5 }]
+
+  [rooms.home.entry]
+  conditions = [{ name = "entrance", distance = 5 }]
+  """
