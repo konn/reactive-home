@@ -48,7 +48,7 @@ module Home.Reactive.ESPresense (
 
 import Control.Applicative (empty, (<|>))
 import Control.Lens ((&), (.~))
-import Control.Monad (unless, void)
+import Control.Monad (join, unless, void)
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Aeson qualified as A
 import Data.ByteString.Char8 qualified as BS8
@@ -81,6 +81,7 @@ import Validation (Validation (..))
 
 data ESPresenseSnapshot = ESPresenseSnapshot
   { sensors :: HashMap ESPSensorName (HashMap ESPDeviceId ESPSensorState)
+  , distanceAverages :: HashMap ESPSensorName (HashMap ESPDeviceId (Maybe Float))
   , rooms :: HashMap T.Text [ESPDeviceId]
   }
   deriving (Show, Eq, Ord, Generic)
@@ -99,6 +100,30 @@ espresenseSnapshotS = effReaderS @ESPresenseConfig proc (evt, cfg) -> do
         Heartbeat -> Nothing
         Event status -> Just status
   sensors <- aggregateESPStatus -< stt
+  let averageInputs =
+        [ ( sensorCfg.name
+          , device
+          , DistanceAverageParams
+              { averageWindow = fromMaybe 5 sensorCfg.window
+              , averageTimeout = sensorCfg.timeout
+              , averageDistance = case evt of
+                  Event status
+                    | status.id == device
+                    , status.sensor == sensorCfg.name ->
+                        Just status.distance
+                  _ -> Nothing
+              }
+          )
+        | sensorCfg <- cfg.sensors
+        , device <- cfg.devices
+        ]
+  averageValues <- parallely distanceAverageS -< map (\(_, _, params) -> params) averageInputs
+  let distanceAverages =
+        HM.fromListWith
+          HM.union
+          [ (sensorName, HM.singleton device averageValue)
+          | ((sensorName, device, _), averageValue) <- zip averageInputs averageValues
+          ]
   rooms <- parallely roomPresenceS -< HM.map (,evt) cfg.rooms
   returnA -< ESPresenseSnapshot {..}
 
@@ -179,6 +204,31 @@ data SensorParams = SensorParams
   , distance :: !(Maybe Float)
   }
   deriving (Show, Eq, Ord, Generic)
+
+data DistanceAverageParams = DistanceAverageParams
+  { averageWindow :: !Int
+  , averageTimeout :: !Duration
+  , averageDistance :: !(Maybe Float)
+  }
+  deriving (Show, Eq, Ord, Generic)
+
+distanceAverageS ::
+  (Time cl ~ UTCTime) =>
+  ClSF (Eff es) cl DistanceAverageParams (Maybe Float)
+distanceAverageS = proc DistanceAverageParams {..} -> do
+  avgEvent <-
+    FRP.Rhine.mapMaybe movingAverageS
+      -<
+        ( \dist ->
+            ( MovingAverageConfig
+                { window = averageWindow
+                , timeout = Just averageTimeout.seconds
+                }
+            , dist
+            )
+        )
+          <$> averageDistance
+  returnA -< join avgEvent
 
 sensorPresenceS ::
   (Time cl ~ UTCTime) =>
