@@ -81,6 +81,7 @@ library
     hasquitto-effectful,
     lens,
     monad-schedule,
+    monoidal-containers,
     optparse-applicative,
     rhine,
     safe-exceptions,

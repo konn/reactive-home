@@ -39,26 +39,28 @@ module Home.Reactive.ESPresense (
   parseESPStatusS,
   buildESPStatus,
   aggregateESPStatus,
-  occupancyListS,
-  OccupancyList,
-  isVacant,
-  occupants,
-  numOccupants,
 ) where
 
 import Control.Applicative (empty, (<|>))
 import Control.Lens ((&), (.~))
 import Control.Monad (unless, void)
-import Data.Aeson (FromJSON, ToJSON)
+import Data.Aeson (FromJSON, FromJSONKey, ToJSON, ToJSONKey)
 import Data.Aeson qualified as A
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as LBS
 import Data.Char qualified as C
+import Data.Coerce (coerce)
+import Data.DList.DNonEmpty qualified as DLNE
 import Data.Foldable (find)
 import Data.Generics.Labels ()
+import Data.HashMap.Monoidal qualified as MHM
 import Data.HashMap.Strict (HashMap)
 import Data.HashMap.Strict qualified as HM
+import Data.Hashable (Hashable)
+import Data.List.NonEmpty (NonEmpty)
 import Data.Maybe (fromMaybe)
+import Data.Semigroup (Max (..))
+import Data.String (IsString)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Effectful
@@ -71,7 +73,6 @@ import Home.Reactive.MQTT
 import Home.Reactive.Metrics.Mackerel
 import Home.Reactive.Utils (
   MovingAverageConfig (..),
-  catMaybesS,
   effReaderS,
   movingAverageS,
  )
@@ -82,8 +83,8 @@ import Validation (Validation (..))
 
 data ESPresenseSnapshot = ESPresenseSnapshot
   { sensors :: HashMap ESPSensorName (HashMap ESPDeviceId ESPSensorState)
-  , distanceAverages :: HashMap ESPSensorName (HashMap ESPDeviceId (Maybe Float))
-  , rooms :: HashMap T.Text [ESPDeviceId]
+  , -- , distanceAverages :: HashMap ESPSensorName (HashMap ESPDeviceId (Maybe Float))
+    rooms :: HashMap T.Text [DeviceStatus]
   }
   deriving (Show, Eq, Ord, Generic)
   deriving anyclass (FromJSON, ToJSON)
@@ -101,35 +102,12 @@ espresenseSnapshotS = effReaderS @ESPresenseConfig proc (evt, cfg) -> do
         Heartbeat -> Nothing
         Event status -> Just status
   sensors <- aggregateESPStatus -< stt
-  let averageInputs =
-        [ ( sensorCfg.name
-          , device
-          , DistanceAverageParams
-              { window = fromMaybe 5 sensorCfg.window
-              , timeout = sensorCfg.timeout
-              , distance = case evt of
-                  Event status
-                    | status.id == device
-                    , status.sensor == sensorCfg.name ->
-                        Just status.distance
-                  _ -> Nothing
-              }
-          )
-        | sensorCfg <- cfg.sensors
-        , device <- cfg.devices
-        ]
-  averageValues <- parallely distanceAverageS -< map (\(_, _, params) -> params) averageInputs
-  let distanceAverages =
-        HM.fromListWith
-          HM.union
-          [ (sensorName, HM.singleton device averageValue)
-          | ((sensorName, device, _), averageValue) <- zip averageInputs averageValues
-          ]
+
   rooms <- parallely roomPresenceS -< HM.map (,evt) cfg.rooms
   returnA -< ESPresenseSnapshot {..}
 
 data ESPSensor = ESPSensor
-  { name :: !T.Text
+  { name :: !ESPSensorName
   , max_distance :: !Float
   , skip_distance :: !Float
   , skip_ms :: !Int
@@ -153,7 +131,7 @@ numberFloat key = Toml.float key <|> Toml.dimap round fromIntegral (Toml.int key
 
 roomCodec :: Codec ESPSensor ESPSensor
 roomCodec = do
-  name <- Toml.text "name" .= (.name)
+  name <- ESPSensorName <$> Toml.text "name" .= (.name.raw)
   max_distance <- option 16 "max_distance" (numberFloat "max_distance") .= (.max_distance)
   skip_distance <- option 0.5 "skip_distance" (numberFloat "skip_distance") .= (.skip_distance)
   skip_ms <- option 5000 "skip_ms" (Toml.int "skip_ms") .= (.skip_ms)
@@ -168,7 +146,7 @@ instance HasCodec ESPSensor where
   hasCodec = table roomCodec
 
 data ESPresenseConfig = ESPresenseConfig
-  { devices :: ![T.Text]
+  { devices :: ![ESPDeviceId]
   , sensors :: ![ESPSensor]
   , rooms :: !(HashMap T.Text Room)
   }
@@ -181,14 +159,14 @@ instance HasItemCodec ESPresenseConfig where
   hasItemCodec = Right espresenseConfigCodec
 
 data RoomSensor = RoomSensor
-  { sensor :: !T.Text
+  { sensor :: !ESPSensorName
   , distance :: !Float
   }
   deriving (Show, Eq, Ord, Generic)
 
 roomSensorCodec :: TomlCodec RoomSensor
 roomSensorCodec = do
-  sensor <- Toml.text "sensor" .= (.sensor)
+  sensor <- ESPSensorName <$> Toml.text "sensor" .= (.sensor.raw)
   distance <- numberFloat "distance" .= (.distance)
   pure RoomSensor {..}
 
@@ -202,14 +180,16 @@ data SensorParams = SensorParams
   { threshold :: !Float
   , window :: !Int
   , timeout :: !Duration
-  , distance :: !(Maybe Float)
+  , distance :: !Float
+  , sensor :: !ESPSensorName
+  , device :: !ESPDeviceId
   }
   deriving (Show, Eq, Ord, Generic)
 
 data DistanceAverageParams = DistanceAverageParams
   { window :: !Int
   , timeout :: !Duration
-  , distance :: !(Maybe Float)
+  , distance :: !Float
   }
   deriving (Show, Eq, Ord, Generic)
 
@@ -217,23 +197,19 @@ distanceAverageS ::
   (Time cl ~ UTCTime) =>
   ClSF (Eff es) cl DistanceAverageParams (Maybe Float)
 distanceAverageS = proc DistanceAverageParams {..} -> do
-  catMaybesS Nothing
-    <-< FRP.Rhine.mapMaybe movingAverageS
+  movingAverageS
     -<
-      ( \dist ->
-          ( MovingAverageConfig
-              { window = window
-              , timeout = Just timeout.seconds
-              }
-          , dist
-          )
+      ( MovingAverageConfig
+          { window = window
+          , timeout = Just timeout.seconds
+          }
+      , distance
       )
-        <$> distance
 
 sensorPresenceS ::
   (Time cl ~ UTCTime) =>
   ClSF (Eff es) cl SensorParams Bool
-sensorPresenceS = feedback Nothing proc (SensorParams {..}, prevSeen) -> do
+sensorPresenceS = proc SensorParams {..} -> do
   TimeInfo {..} <- timeInfo -< ()
   avg <-
     distanceAverageS
@@ -243,45 +219,62 @@ sensorPresenceS = feedback Nothing proc (SensorParams {..}, prevSeen) -> do
           , timeout = timeout
           , distance = distance
           }
-  let !lastSeen = case distance of
-        Nothing -> prevSeen
-        Just _ -> Just absolute
-      !fresh = maybe False (\seen -> absolute `diffTime` seen < timeout.seconds) lastSeen
+  let !lastSeen = absolute
+      !fresh = absolute `diffTime` lastSeen < timeout.seconds
       !present = maybe False (<= threshold) avg && fresh
-  returnA -< (present, lastSeen)
+  returnA -< present
+
+data DeviceStatus = DeviceStatus
+  { device :: !ESPDeviceId
+  , seenBy :: NonEmpty (ESPSensorName, UTCTime)
+  , lastSeen :: !UTCTime
+  }
+  deriving (Show, Eq, Ord, Generic)
+  deriving anyclass (ToJSON, FromJSON)
 
 roomPresenceS ::
   (Time cl ~ UTCTime, Reader ESPresenseConfig :> es) =>
-  ClSF (Eff es) cl (Room, Heartbeated ESPStatus) [ESPDeviceId]
-roomPresenceS = effReaderS @ESPresenseConfig proc ((room, evt), cfg) -> do
-  let sensorInputs =
-        [ (device, sensorParams room rs sensorCfg device evt)
-        | device <- cfg.devices
-        , rs <- room.sensors
-        , Just sensorCfg <- [find (\s -> s.name == rs.sensor) cfg.sensors]
-        ]
-  presentBySensor <- parallely sensorPresenceS -< fmap snd sensorInputs
-  let presentByDevice =
-        HM.fromListWith
-          (||)
-          [ (device, present)
-          | ((device, _), present) <- zip sensorInputs presentBySensor
-          ]
-  returnA -< filter (\device -> HM.lookupDefault False device presentByDevice) cfg.devices
+  ClSF (Eff es) cl (Room, Heartbeated ESPStatus) [DeviceStatus]
+roomPresenceS = effReaderS @ESPresenseConfig $
+  feedback HM.empty proc (((room, evt), cfg), prevOccupants) -> do
+    TimeInfo {..} <- timeInfo -< ()
+    let !occupants =
+          HM.filter
+            (\stt -> absolute `diffTime` stt < room.timeout.seconds)
+            prevOccupants
+    occupants' <- case evt of
+      Event stt
+        | Just sensor <- find (\s -> s.name == stt.sensor) cfg.sensors
+        , Just sensorCfg <- find (\s -> s.sensor == stt.sensor) room.sensors -> do
+            let ps =
+                  SensorParams
+                    { threshold = sensorCfg.distance
+                    , window = fromMaybe 5 sensor.window
+                    , timeout = room.timeout
+                    , distance = stt.distance
+                    , sensor = stt.sensor
+                    , device = stt.id
+                    }
+            present <- sensorPresenceS -< ps
+            if present
+              then returnA -< HM.insert (sensor.name, stt.id) absolute occupants
+              else returnA -< HM.delete (sensor.name, stt.id) occupants
+      _ -> returnA -< occupants
+    returnA -< (toOccupancyList occupants', occupants')
 
-sensorParams :: Room -> RoomSensor -> ESPSensor -> ESPDeviceId -> Heartbeated ESPStatus -> SensorParams
-sensorParams room rs sensorCfg device evt =
-  SensorParams
-    { threshold = rs.distance
-    , window = fromMaybe 5 sensorCfg.window
-    , timeout = room.timeout
-    , distance = case evt of
-        Event stt
-          | stt.id == device
-          , stt.sensor == rs.sensor ->
-              Just stt.distance
-        _ -> Nothing
-    }
+toOccupancyList :: HashMap (ESPSensorName, ESPDeviceId) UTCTime -> [DeviceStatus]
+toOccupancyList =
+  map
+    ( \(device, (seenBy, Max lastSeen)) ->
+        DeviceStatus {device, seenBy = DLNE.toNonEmpty seenBy, lastSeen}
+    )
+    . MHM.toList
+    . HM.foldMapWithKey
+      ( \(sensor, device) lastSeen ->
+          MHM.singleton
+            device
+            (DLNE.singleton (sensor, lastSeen), Max lastSeen)
+      )
 
 roomRuleCodec :: TomlCodec Room
 roomRuleCodec = do
@@ -294,7 +287,7 @@ espresenseConfigCodec = validateConfigCodec baseCodec
   where
     baseCodec :: TomlCodec ESPresenseConfig
     baseCodec = do
-      devices <- Toml.arrayOf Toml._Text "devices" .= (.devices)
+      devices <- coerce <$> Toml.arrayOf Toml._Text "devices" .= map (.raw) . (.devices)
       sensors <- Toml.list roomCodec "sensors" .= (.sensors)
       rooms <- roomsCodec .= (.rooms)
       pure ESPresenseConfig {..}
@@ -353,7 +346,7 @@ hasObsoleteRoomTables toml =
     )
     (fst <$> Toml.toList toml.tomlTables)
 
-firstInvalidRoomSensors :: ESPresenseConfig -> Maybe (T.Text, [T.Text])
+firstInvalidRoomSensors :: ESPresenseConfig -> Maybe (T.Text, [ESPSensorName])
 firstInvalidRoomSensors cfg =
   find (not . null . snd) $
     [ (roomName, filter (`notElem` sensorNames) (map (.sensor) room.sensors))
@@ -404,14 +397,14 @@ initialiseRoom ::
   ESPSensor ->
   Eff es ()
 initialiseRoom sensors room = do
-  let setTopic k = "espresense" <> "rooms" <> Topic room.name <> Topic k <> "set"
+  let setTopic k = "espresense" <> "rooms" <> Topic room.name.raw <> Topic k <> "set"
   pub (setTopic "max_distance") (BS8.pack $ show room.max_distance)
   pub (setTopic "skip_distance") (BS8.pack $ show room.skip_distance)
   pub (setTopic "skip_ms") (BS8.pack $ show room.skip_ms)
 
   unless (null sensors) $ do
-    void $ pub (setTopic "include") (BS8.intercalate " " (map TE.encodeUtf8 sensors))
-    void $ pub (setTopic "query") (BS8.intercalate " " (map TE.encodeUtf8 sensors))
+    void $ pub (setTopic "include") (BS8.intercalate " " (map (TE.encodeUtf8 . (.raw)) sensors))
+    void $ pub (setTopic "query") (BS8.intercalate " " (map (TE.encodeUtf8 . (.raw)) sensors))
 
 formatDuration :: Duration -> T.Text
 formatDuration (Duration secs)
@@ -440,21 +433,43 @@ parseDuration inp = case T.span (\c -> C.isDigit c || c == '.' || c == '_') inp 
 
 espresenseTopicFilters :: ESPresenseConfig -> [TopicFilter]
 espresenseTopicFilters ESPresenseConfig {..} =
-  [ "espresense" <> "devices" <> TopicFilter device <> wildOne
+  [ "espresense" <> "devices" <> TopicFilter device.raw <> wildOne
   | device <- devices
   ]
-    <> [ "espresense" <> "rooms" <> TopicFilter room.name <> key
+    <> [ "espresense" <> "rooms" <> TopicFilter room.name.raw <> key
        | room <- sensors
        , key <- ["status", "telemetry"]
        ]
 
-type ESPSensorName = T.Text
+newtype ESPSensorName = ESPSensorName {raw :: T.Text}
+  deriving (Show, Eq, Ord, Generic)
+  deriving newtype
+    ( FromJSON
+    , ToJSON
+    , FromJSONKey
+    , ToJSONKey
+    , IsString
+    , HasCodec
+    , HasItemCodec
+    , Hashable
+    )
 
-type ESPDeviceId = T.Text
+newtype ESPDeviceId = ESPDeviceId {raw :: T.Text}
+  deriving (Show, Eq, Ord, Generic)
+  deriving newtype
+    ( FromJSON
+    , ToJSON
+    , FromJSONKey
+    , ToJSONKey
+    , IsString
+    , HasCodec
+    , HasItemCodec
+    , Hashable
+    )
 
 data RawESPStatus = RawESPStatus
   { mac :: {-# UNPACK #-} !T.Text
-  , id :: {-# UNPACK #-} !T.Text
+  , id :: {-# UNPACK #-} !ESPDeviceId
   , name :: {-# UNPACK #-} !T.Text
   , rssi :: {-# UNPACK #-} !Float
   , rssiVar :: {-# UNPACK #-} !Float
@@ -467,9 +482,9 @@ data RawESPStatus = RawESPStatus
 
 data ESPStatus = ESPStatus
   { timestamp :: {-# UNPACK #-} !UTCTime
-  , sensor :: {-# UNPACK #-} !T.Text
+  , sensor :: {-# UNPACK #-} !ESPSensorName
   , mac :: {-# UNPACK #-} !T.Text
-  , id :: {-# UNPACK #-} !T.Text
+  , id :: {-# UNPACK #-} !ESPDeviceId
   , name :: {-# UNPACK #-} !T.Text
   , rssi :: {-# UNPACK #-} !Float
   , rssiVar :: {-# UNPACK #-} !Float
@@ -491,7 +506,7 @@ data ESPSensorState = ESPSensorState
 
 parseRawESPStatus ::
   MqttMessage ->
-  ParseResult String (T.Text, RawESPStatus)
+  ParseResult String (ESPSensorName, RawESPStatus)
 parseRawESPStatus msg =
   case stripPrefix "espresense/devices" msg.topic of
     Nothing -> Skipped
@@ -500,10 +515,10 @@ parseRawESPStatus msg =
         [_, sensor] ->
           case A.eitherDecode' $ LBS.fromStrict msg.payload of
             Left err -> ParseFailure err
-            Right stt -> ParseSuccess (sensor, stt)
+            Right stt -> ParseSuccess (ESPSensorName sensor, stt)
         _ -> Skipped
 
-buildESPStatus :: UTCTime -> T.Text -> RawESPStatus -> ESPStatus
+buildESPStatus :: UTCTime -> ESPSensorName -> RawESPStatus -> ESPStatus
 buildESPStatus timestamp sensor stt =
   ESPStatus
     { timestamp
@@ -524,32 +539,6 @@ parseESPStatusS ::
 parseESPStatusS = proc msg -> do
   TimeInfo {..} <- timeInfo -< ()
   returnA -< uncurry (buildESPStatus absolute) <$> parseRawESPStatus msg
-
-type OccupancyList = HashMap ESPDeviceId ESPStatus
-
-isVacant :: OccupancyList -> Bool
-isVacant = HM.null
-
-occupants :: OccupancyList -> [ESPDeviceId]
-occupants = HM.keys
-
-numOccupants :: OccupancyList -> Int
-numOccupants = HM.size
-
-occupancyListS ::
-  (Time cl ~ UTCTime) =>
-  ESPSensor ->
-  ClSF (Eff es) cl (Maybe ESPStatus) OccupancyList
-occupancyListS room = feedback HM.empty $ proc (event, residents) -> do
-  TimeInfo {..} <- timeInfo -< ()
-  let residents' =
-        HM.filter
-          (\stt -> absolute `diffTime` stt.timestamp < room.timeout.seconds)
-          residents
-
-  case event of
-    Nothing -> returnA -< (residents', residents')
-    Just stt -> returnA -< (HM.insert stt.id stt residents', residents')
 
 aggregateESPStatus ::
   BehaviourF
@@ -574,12 +563,12 @@ aggregateESPStatus = feedback HM.empty $ arr \(!mest, !prev) ->
 instance ToMackerelMetrics ESPStatus where
   toMetrics stt =
     [ MackerelEntry
-        { name = "espresense.distance." <> stt.sensor
+        { name = "espresense.distance." <> stt.sensor.raw
         , time = stt.timestamp
         , value = A.Number (realToFrac stt.distance)
         }
     , MackerelEntry
-        { name = "espresense.variance." <> stt.sensor
+        { name = "espresense.variance." <> stt.sensor.raw
         , time = stt.timestamp
         , value = A.Number (realToFrac stt.var)
         }
