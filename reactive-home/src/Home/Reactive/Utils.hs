@@ -105,6 +105,6 @@ catMaybesS ::
   (Monad m) =>
   a ->
   ClSF m cl (Maybe a) a
-catMaybesS def = feedback def proc (mx, prev) -> do
+catMaybesS ini = feedback ini proc (mx, prev) -> do
   let !x = maybe prev id mx
   returnA -< (x, x)
