@@ -22,6 +22,7 @@ module Home.Reactive.Utils (
 
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Reader qualified as MTL
+import Data.Aeson (FromJSON, ToJSON)
 import Data.Sequence qualified as Seq
 import Effectful (Eff, (:>))
 import Effectful.Reader.Static (Reader)
@@ -78,6 +79,7 @@ movingAverageS_ cfg = feedback Seq.empty proc (x, hist) -> do
 
 data Spanned t a = Spanned {value :: !a, duration :: !t}
   deriving (Show, Eq, Ord, Generic, Functor, Foldable, Traversable)
+  deriving anyclass (FromJSON, ToJSON)
 
 spanned ::
   (Eq a, Monad m, Num (Diff (Time cl)), TimeDomain (Time cl)) =>

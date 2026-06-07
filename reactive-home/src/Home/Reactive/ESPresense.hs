@@ -48,7 +48,7 @@ module Home.Reactive.ESPresense (
 
 import Control.Applicative (empty, (<|>))
 import Control.Lens ((&), (.~))
-import Control.Monad (join, unless, void)
+import Control.Monad (unless, void)
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Aeson qualified as A
 import Data.ByteString.Char8 qualified as BS8
@@ -71,8 +71,10 @@ import Home.Reactive.MQTT
 import Home.Reactive.Metrics.Mackerel
 import Home.Reactive.Utils (
   MovingAverageConfig (..),
+  Spanned,
   effReaderS,
   movingAverageS,
+  spanned,
  )
 import Network.Mqtt.Types.Topic (stripPrefix)
 import Text.Read (readEither)
@@ -81,7 +83,7 @@ import Validation (Validation (..))
 
 data ESPresenseSnapshot = ESPresenseSnapshot
   { sensors :: HashMap ESPSensorName (HashMap ESPDeviceId ESPSensorState)
-  , distanceAverages :: HashMap ESPSensorName (HashMap ESPDeviceId (Maybe Float))
+  , distanceAverages :: HashMap ESPSensorName (HashMap ESPDeviceId (Spanned (Diff UTCTime) (Maybe Float)))
   , rooms :: HashMap T.Text [ESPDeviceId]
   }
   deriving (Show, Eq, Ord, Generic)
@@ -214,8 +216,15 @@ data DistanceAverageParams = DistanceAverageParams
 
 distanceAverageS ::
   (Time cl ~ UTCTime) =>
+  ClSF (Eff es) cl DistanceAverageParams (Spanned (Diff UTCTime) (Maybe Float))
+distanceAverageS = proc params -> do
+  avg <- effectiveDistanceAverageS -< params
+  spanned -< avg
+
+effectiveDistanceAverageS ::
+  (Time cl ~ UTCTime) =>
   ClSF (Eff es) cl DistanceAverageParams (Maybe Float)
-distanceAverageS = proc DistanceAverageParams {..} -> do
+effectiveDistanceAverageS = feedback Nothing proc (DistanceAverageParams {..}, prevAvg) -> do
   avgEvent <-
     FRP.Rhine.mapMaybe movingAverageS
       -<
@@ -228,34 +237,30 @@ distanceAverageS = proc DistanceAverageParams {..} -> do
             )
         )
           <$> averageDistance
-  returnA -< join avgEvent
+  let !avg = case avgEvent of
+        Nothing -> prevAvg
+        Just newAvg -> newAvg
+  returnA -< (avg, avg)
 
 sensorPresenceS ::
   (Time cl ~ UTCTime) =>
   ClSF (Eff es) cl SensorParams Bool
-sensorPresenceS = feedback (Nothing, Nothing) proc (SensorParams {..}, (prevAvg, prevSeen)) -> do
+sensorPresenceS = feedback Nothing proc (SensorParams {..}, prevSeen) -> do
   TimeInfo {..} <- timeInfo -< ()
-  mavgEvent <-
-    FRP.Rhine.mapMaybe movingAverageS
+  avg <-
+    effectiveDistanceAverageS
       -<
-        ( \dist ->
-            ( MovingAverageConfig
-                { window = window
-                , timeout = Just timeout.seconds
-                }
-            , dist
-            )
-        )
-          <$> distance
-  let !avg = case mavgEvent of
-        Nothing -> prevAvg
-        Just newAvg -> newAvg
-      !lastSeen = case distance of
+        DistanceAverageParams
+          { averageWindow = window
+          , averageTimeout = timeout
+          , averageDistance = distance
+          }
+  let !lastSeen = case distance of
         Nothing -> prevSeen
         Just _ -> Just absolute
       !fresh = maybe False (\seen -> absolute `diffTime` seen < timeout.seconds) lastSeen
       !present = maybe False (<= threshold) avg && fresh
-  returnA -< (present, (avg, lastSeen))
+  returnA -< (present, lastSeen)
 
 roomPresenceS ::
   (Time cl ~ UTCTime, Reader ESPresenseConfig :> es) =>
