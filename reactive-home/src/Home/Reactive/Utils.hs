@@ -24,6 +24,7 @@ module Home.Reactive.Utils (
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Reader qualified as MTL
 import Data.Aeson (FromJSON, ToJSON)
+import Data.Maybe (fromMaybe)
 import Data.Sequence qualified as Seq
 import Effectful (Eff, (:>))
 import Effectful.Reader.Static (Reader)
@@ -106,5 +107,5 @@ catMaybesS ::
   a ->
   ClSF m cl (Maybe a) a
 catMaybesS ini = feedback ini proc (mx, prev) -> do
-  let !x = maybe prev id mx
+  let !x = fromMaybe prev mx
   returnA -< (x, x)
