@@ -10,7 +10,7 @@ import Home.Reactive.ESPresense (
   ESPSensor (..),
   ESPresenseConfig (..),
   Room (..),
-  SensorCondition (..),
+  RoomSensor (..),
   espresenseConfigCodec,
   minutes,
   seconds,
@@ -86,7 +86,7 @@ test_tomlParsing =
         case decodeExact espresenseConfigCodec invalidRoomToml of
           Left _ -> pure ()
           Right cfg -> assertFailure $ "expected TOML decode failure, got: " <> show cfg
-    , testCase "parses rooms with leave/entry conditions" $
+    , testCase "parses rooms with sensor distance limits" $
         decodeExact espresenseConfigCodec roomsToml
           @?= Right
             ESPresenseConfig
@@ -100,6 +100,14 @@ test_tomlParsing =
                       , timeout = seconds 5
                       , window = Nothing
                       }
+                  , ESPSensor
+                      { name = "bedroom"
+                      , max_distance = 16
+                      , skip_distance = 0.5
+                      , skip_ms = 5000
+                      , timeout = seconds 5
+                      , window = Nothing
+                      }
                   ]
               , rooms =
                   HM.fromList
@@ -107,21 +115,20 @@ test_tomlParsing =
                       ( "home"
                       , Room
                           { timeout = minutes 3
-                          , leave =
-                              [ SensorCondition {sensor = "entrance", device = "watch:", distance = 6.5}
-                              , SensorCondition {sensor = "bedroom", device = "watch:", distance = 5}
+                          , sensors =
+                              [ RoomSensor {sensor = "entrance", distance = 6.5}
+                              , RoomSensor {sensor = "bedroom", distance = 5}
                               ]
-                          , entry = [SensorCondition {sensor = "entrance", device = "watch:", distance = 5}]
                           }
                       )
                     ]
               }
-    , testCase "rejects unknown devices in leave conditions" $
-        case decodeExact espresenseConfigCodec invalidLeaveDeviceToml of
+    , testCase "rejects unknown room sensors" $
+        case decodeExact espresenseConfigCodec invalidRoomSensorToml of
           Left _ -> pure ()
           Right cfg -> assertFailure $ "expected TOML decode failure, got: " <> show cfg
-    , testCase "rejects unknown devices in entry conditions" $
-        case decodeExact espresenseConfigCodec invalidEntryDeviceToml of
+    , testCase "rejects obsolete leave/entry room config" $
+        case decodeExact espresenseConfigCodec obsoleteRoomConditionsToml of
           Left _ -> pure ()
           Right cfg -> assertFailure $ "expected TOML decode failure, got: " <> show cfg
     ]
@@ -184,21 +191,23 @@ roomsToml =
   [[sensors]]
   name = "entrance"
 
+  [[sensors]]
+  name = "bedroom"
+
   [rooms.home]
   timeout = "3m"
 
-  [rooms.home.leave]
-  conditions = [
-    { sensor = "entrance", device = "watch:", distance = 6.5 },
-    { sensor = "bedroom", device = "watch:", distance = 5 },
-  ]
+  [[rooms.home.sensors]]
+  sensor = "entrance"
+  distance = 6.5
 
-  [rooms.home.entry]
-  conditions = [{ sensor = "entrance", device = "watch:", distance = 5 }]
+  [[rooms.home.sensors]]
+  sensor = "bedroom"
+  distance = 5
   """
 
-invalidLeaveDeviceToml :: T.Text
-invalidLeaveDeviceToml =
+invalidRoomSensorToml :: T.Text
+invalidRoomSensorToml =
   """
   devices = ["watch:"]
 
@@ -208,15 +217,13 @@ invalidLeaveDeviceToml =
   [rooms.home]
   timeout = "3m"
 
-  [rooms.home.leave]
-  conditions = [{ sensor = "entrance", device = "unknown:", distance = 6.5 }]
-
-  [rooms.home.entry]
-  conditions = [{ sensor = "entrance", device = "watch:", distance = 5 }]
+  [[rooms.home.sensors]]
+  sensor = "bedroom"
+  distance = 6.5
   """
 
-invalidEntryDeviceToml :: T.Text
-invalidEntryDeviceToml =
+obsoleteRoomConditionsToml :: T.Text
+obsoleteRoomConditionsToml =
   """
   devices = ["watch:"]
 
@@ -230,5 +237,5 @@ invalidEntryDeviceToml =
   conditions = [{ sensor = "entrance", device = "watch:", distance = 6.5 }]
 
   [rooms.home.entry]
-  conditions = [{ sensor = "entrance", device = "unknown:", distance = 5 }]
+  conditions = [{ sensor = "entrance", device = "watch:", distance = 5 }]
   """
