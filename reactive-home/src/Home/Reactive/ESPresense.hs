@@ -71,10 +71,9 @@ import Home.Reactive.MQTT
 import Home.Reactive.Metrics.Mackerel
 import Home.Reactive.Utils (
   MovingAverageConfig (..),
-  Spanned,
+  catMaybesS,
   effReaderS,
   movingAverageS,
-  spanned,
  )
 import Network.Mqtt.Types.Topic (stripPrefix)
 import Text.Read (readEither)
@@ -83,7 +82,7 @@ import Validation (Validation (..))
 
 data ESPresenseSnapshot = ESPresenseSnapshot
   { sensors :: HashMap ESPSensorName (HashMap ESPDeviceId ESPSensorState)
-  , distanceAverages :: HashMap ESPSensorName (HashMap ESPDeviceId (Spanned (Diff UTCTime) (Maybe Float)))
+  , distanceAverages :: HashMap ESPSensorName (HashMap ESPDeviceId (Maybe Float))
   , rooms :: HashMap T.Text [ESPDeviceId]
   }
   deriving (Show, Eq, Ord, Generic)
@@ -216,15 +215,8 @@ data DistanceAverageParams = DistanceAverageParams
 
 distanceAverageS ::
   (Time cl ~ UTCTime) =>
-  ClSF (Eff es) cl DistanceAverageParams (Spanned (Diff UTCTime) (Maybe Float))
-distanceAverageS = proc params -> do
-  avg <- effectiveDistanceAverageS -< params
-  spanned -< avg
-
-effectiveDistanceAverageS ::
-  (Time cl ~ UTCTime) =>
   ClSF (Eff es) cl DistanceAverageParams (Maybe Float)
-effectiveDistanceAverageS = feedback Nothing proc (DistanceAverageParams {..}, prevAvg) -> do
+distanceAverageS = proc DistanceAverageParams {..} -> do
   avgEvent <-
     FRP.Rhine.mapMaybe movingAverageS
       -<
@@ -237,10 +229,7 @@ effectiveDistanceAverageS = feedback Nothing proc (DistanceAverageParams {..}, p
             )
         )
           <$> averageDistance
-  let !avg = case avgEvent of
-        Nothing -> prevAvg
-        Just newAvg -> newAvg
-  returnA -< (avg, avg)
+  catMaybesS Nothing -< avgEvent
 
 sensorPresenceS ::
   (Time cl ~ UTCTime) =>
@@ -248,7 +237,7 @@ sensorPresenceS ::
 sensorPresenceS = feedback Nothing proc (SensorParams {..}, prevSeen) -> do
   TimeInfo {..} <- timeInfo -< ()
   avg <-
-    effectiveDistanceAverageS
+    distanceAverageS
       -<
         DistanceAverageParams
           { averageWindow = window
