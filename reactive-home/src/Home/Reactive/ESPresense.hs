@@ -105,9 +105,9 @@ espresenseSnapshotS = effReaderS @ESPresenseConfig proc (evt, cfg) -> do
         [ ( sensorCfg.name
           , device
           , DistanceAverageParams
-              { averageWindow = fromMaybe 5 sensorCfg.window
-              , averageTimeout = sensorCfg.timeout
-              , averageDistance = case evt of
+              { window = fromMaybe 5 sensorCfg.window
+              , timeout = sensorCfg.timeout
+              , distance = case evt of
                   Event status
                     | status.id == device
                     , status.sensor == sensorCfg.name ->
@@ -207,9 +207,9 @@ data SensorParams = SensorParams
   deriving (Show, Eq, Ord, Generic)
 
 data DistanceAverageParams = DistanceAverageParams
-  { averageWindow :: !Int
-  , averageTimeout :: !Duration
-  , averageDistance :: !(Maybe Float)
+  { window :: !Int
+  , timeout :: !Duration
+  , distance :: !(Maybe Float)
   }
   deriving (Show, Eq, Ord, Generic)
 
@@ -217,19 +217,18 @@ distanceAverageS ::
   (Time cl ~ UTCTime) =>
   ClSF (Eff es) cl DistanceAverageParams (Maybe Float)
 distanceAverageS = proc DistanceAverageParams {..} -> do
-  avgEvent <-
-    FRP.Rhine.mapMaybe movingAverageS
-      -<
-        ( \dist ->
-            ( MovingAverageConfig
-                { window = averageWindow
-                , timeout = Just averageTimeout.seconds
-                }
-            , dist
-            )
-        )
-          <$> averageDistance
-  catMaybesS Nothing -< avgEvent
+  catMaybesS Nothing
+    <-< FRP.Rhine.mapMaybe movingAverageS
+    -<
+      ( \dist ->
+          ( MovingAverageConfig
+              { window = window
+              , timeout = Just timeout.seconds
+              }
+          , dist
+          )
+      )
+        <$> distance
 
 sensorPresenceS ::
   (Time cl ~ UTCTime) =>
@@ -240,9 +239,9 @@ sensorPresenceS = feedback Nothing proc (SensorParams {..}, prevSeen) -> do
     distanceAverageS
       -<
         DistanceAverageParams
-          { averageWindow = window
-          , averageTimeout = timeout
-          , averageDistance = distance
+          { window = window
+          , timeout = timeout
+          , distance = distance
           }
   let !lastSeen = case distance of
         Nothing -> prevSeen
