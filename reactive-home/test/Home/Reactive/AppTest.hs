@@ -1,0 +1,50 @@
+{-# LANGUAGE MultilineStrings #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
+
+module Home.Reactive.AppTest (test_configParsing) where
+
+import Data.Text qualified as T
+import Home.Reactive.App (Config (..))
+import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.HUnit (testCase, (@?=))
+import Toml (decodeExact, genericCodec)
+
+test_configParsing :: TestTree
+test_configParsing =
+  testGroup
+    "app config parsing"
+    [ testCase "clientId is optional and defaults to broker-assigned mode" $
+        decodeExact (genericCodec @Config) withoutClientIdToml
+          @?= Right
+            Config
+              { host = "localhost"
+              , port = 1883
+              , clientId = Nothing
+              , user = Nothing
+              , password = Nothing
+              , espresense = Nothing
+              , sesame = Nothing
+              , mackerel = Nothing
+              , logLevel = Nothing
+              }
+    , testCase "clientId preserves explicit stable client identifiers" $
+        (.clientId) <$> decodeExact (genericCodec @Config) withClientIdToml
+          @?= Right (Just "reactive-home-test")
+    ]
+
+withoutClientIdToml :: T.Text
+withoutClientIdToml =
+  """
+  host = "localhost"
+  port = 1883
+  """
+
+withClientIdToml :: T.Text
+withClientIdToml =
+  """
+  host = "localhost"
+  port = 1883
+  clientId = "reactive-home-test"
+  """

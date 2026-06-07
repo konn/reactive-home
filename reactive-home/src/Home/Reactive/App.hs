@@ -54,6 +54,7 @@ import Toml hiding (first, map)
 data Config = Config
   { host :: !T.Text
   , port :: !Int
+  , clientId :: !(Maybe T.Text)
   , user :: !(Maybe T.Text)
   , password :: !(Maybe T.Text)
   , espresense :: !(Maybe ESPresenseConfig)
@@ -309,7 +310,7 @@ defaultMainWith config = do
               , port = port config
               , user = user config
               , password = password config
-              , clientId = "reactive-home-client"
+              , clientId = fromMaybe "" config.clientId
               , subscriptions =
                   ts <&> \topic ->
                     Subscription

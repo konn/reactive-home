@@ -113,7 +113,10 @@ test-suite reactive-home-test
   main-is: Test.hs
   hs-source-dirs: test
   -- cabal-gild: discover test --exclude=test/Test.hs
-  other-modules: Home.Reactive.ESPresenseTest
+  other-modules:
+    Home.Reactive.AppTest
+    Home.Reactive.ESPresenseTest
+
   build-tool-depends:
     tasty-discover:tasty-discover
 

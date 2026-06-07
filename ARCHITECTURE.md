@@ -24,6 +24,9 @@ families:
   ids from room sensor distance rules. ESPresense room expiry is driven by a
   Rhine heartbeat clock in parallel with the Mackerel batching clock, so stale
   presence is removed even when no new MQTT report arrives.
+  The app defaults to broker-assigned MQTT client identifiers; a stable
+  `clientId` is an optional top-level config setting for deployments that need
+  one.
 
 ## Dependency Direction
 
