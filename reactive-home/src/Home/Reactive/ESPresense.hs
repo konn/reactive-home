@@ -451,9 +451,10 @@ espresenseTopicFilters ESPresenseConfig {..} =
        ]
 
 newtype ESPSensorName = ESPSensorName {raw :: T.Text}
-  deriving (Show, Eq, Ord, Generic)
+  deriving (Eq, Ord, Generic)
   deriving newtype
-    ( FromJSON
+    ( Show
+    , FromJSON
     , ToJSON
     , FromJSONKey
     , ToJSONKey
@@ -464,9 +465,10 @@ newtype ESPSensorName = ESPSensorName {raw :: T.Text}
     )
 
 newtype ESPDeviceId = ESPDeviceId {raw :: T.Text}
-  deriving (Show, Eq, Ord, Generic)
+  deriving (Eq, Ord, Generic)
   deriving newtype
-    ( FromJSON
+    ( Show
+    , FromJSON
     , ToJSON
     , FromJSONKey
     , ToJSONKey
