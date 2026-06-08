@@ -28,6 +28,7 @@ import Data.HashMap.Strict qualified as HM
 import Data.Hashable (Hashable)
 import Data.Text qualified as T
 import Effectful (Eff, (:>))
+import Effectful.Dispatch.Static (unsafeEff_)
 import Effectful.Network.Mqtt (Mqtt, publish_)
 import Effectful.Reader.Static (Reader, asks)
 import FRP.Rhine
@@ -67,6 +68,7 @@ instance Toml.HasCodec UnlockConfig where
 
 data ApproachCondition = ApproachCondition
   { sensor :: !ESPSensorName
+  , device :: !ESPDeviceId
   , distance :: !Float
   }
   deriving stock (Eq, Show, Ord, Generic)
@@ -78,6 +80,23 @@ isRoomOccupied ::
 isRoomOccupied = proc snapshot -> do
   roomName <- constMCl (asks @UnlockConfig (.room)) -< ()
   returnA -< maybe False (not . null) (HM.lookup roomName snapshot.rooms)
+
+anyApproachDetected ::
+  (Reader UnlockConfig :> es) =>
+  ClSF (Eff es) cl ESPresenseSnapshot Bool
+anyApproachDetected = proc snapshot -> do
+  conditions <- constMCl (asks @UnlockConfig (.approach)) -< ()
+  or <$> parallely singleApproach -< map (,snapshot) conditions
+
+-- FIXME: use moving average value!
+singleApproach :: ClSF (Eff es) cl (ApproachCondition, ESPresenseSnapshot) Bool
+singleApproach = proc (cond, snapshot) -> do
+  let sensorName = cond.sensor
+      thresh = cond.distance
+  returnA
+    -< case HM.lookup cond.device =<< HM.lookup sensorName snapshot.sensors of
+      Nothing -> False
+      Just sensor -> sensor.distance <= thresh
 
 data UnlockStatus
   = -- | Occupied by at least one device
@@ -95,14 +114,15 @@ unlockEventS ::
   ) =>
   ClSF (Eff es) cl ESPresenseSnapshot (Maybe UnlockEvent)
 unlockEventS =
-  isRoomOccupied >-> spanned >-> feedback Waiting proc (Spanned {value = occupied, ..}, prev) -> do
+  (anyApproachDetected &&& isRoomOccupied >-> spanned) >-> feedback Waiting proc ((near, sp@Spanned {value = occupied, ..}), prev) -> do
     thresh <- constMCl (asks @UnlockConfig (.delay)) -< ()
+    arrMCl (\(near, sp, prev) -> unsafeEff_ $ putStrLn $ "ESP feedback: " <> show (near, sp, prev)) -< (near, sp, prev)
     returnA
       -<
         if
-          | occupied ->
+          | occupied || near ->
               case prev of
-                Waiting -> (Just Unlock, Occupied)
+                Vacant -> (Just Unlock, Occupied)
                 _ -> (Nothing, Occupied)
           | duration >= thresh.seconds -> (Nothing, Vacant)
           | otherwise -> (Nothing, Waiting)
