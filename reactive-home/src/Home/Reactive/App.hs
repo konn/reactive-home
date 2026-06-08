@@ -273,7 +273,7 @@ mainLoop =
     --> ( processESPHeartbeat
             @@ ioClock waitClock
             |@| bulkMackerelS
-              @@ ioClock waitClock
+            @@ ioClock waitClock
         )
 
 display :: (Reader HomeEnv :> es, Console :> es, Show a) => LogLevel -> a -> Eff es ()
@@ -282,7 +282,7 @@ display level a = do
   if level >= minLevel
     then do
       now <- unsafeEff_ getZonedTime
-      let timestamp = formatTime defaultTimeLocale "[%Y-%m-%d %H:%M:%S %Z]" now
+      let timestamp = formatTime defaultTimeLocale "[%Y-%m-%d %H:%M:%S %Z] " now
       Console.putStrLn . TE.encodeUtf8 . T.pack . (timestamp <>) . show $ a
     else pure ()
 
