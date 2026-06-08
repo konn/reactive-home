@@ -21,7 +21,7 @@ module Home.Reactive.ESPresense (
   aggregateESPresenseDeltaS,
   espresenseSnapshotS,
   ESPSensor (..),
-  Duration (),
+  Duration (..),
   millis,
   seconds,
   minutes,
@@ -424,6 +424,15 @@ firstInvalidRoomSensors cfg =
 
 newtype Duration = Duration {seconds :: Diff UTCTime}
   deriving (Eq, Ord, Generic)
+  deriving newtype (Hashable)
+
+instance ToJSON Duration where
+  toEncoding (Duration secs) = A.toEncoding (formatDuration (Duration secs))
+
+instance FromJSON Duration where
+  parseJSON v = do
+    txt <- A.parseJSON v
+    either (fail . T.unpack) pure (parseDuration txt)
 
 millis :: Double -> Duration
 millis ms = Duration (ms / 1000)
