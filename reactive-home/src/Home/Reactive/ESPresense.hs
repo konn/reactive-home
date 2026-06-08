@@ -103,6 +103,10 @@ data ESPresenseDelta = ESPresenseDelta
   deriving (Show, Eq, Ord, Generic)
   deriving anyclass (FromJSON, ToJSON)
 
+nullESPresenseDelta :: ESPresenseDelta -> Bool
+nullESPresenseDelta delta =
+  HM.null delta.sensors && HM.null delta.rooms
+
 data Heartbeated a = Heartbeat | Event !a
   deriving (Show, Eq, Ord, Generic, Functor, Foldable, Traversable)
 
@@ -110,7 +114,7 @@ espresenseDeltaS ::
   ( Time cl ~ UTCTime
   , Reader ESPresenseConfig :> es
   ) =>
-  ClSF (Eff es) cl (Heartbeated ESPStatus) ESPresenseDelta
+  ClSF (Eff es) cl (Heartbeated ESPStatus) (Maybe ESPresenseDelta)
 espresenseDeltaS = effReaderS @ESPresenseConfig proc (evt, cfg) -> do
   sensors <-
     fmap (HM.filter (not . HM.null)) (parallely sensorStatusDeltaS)
@@ -125,15 +129,16 @@ espresenseDeltaS = effReaderS @ESPresenseConfig proc (evt, cfg) -> do
       -<
         HM.map (,evt) cfg.rooms
 
-  returnA -< ESPresenseDelta {..}
+  let !delta = ESPresenseDelta {..}
+  returnA -< if nullESPresenseDelta delta then Nothing else Just delta
 
 aggregateESPresenseDeltaS ::
   (Reader ESPresenseConfig :> es) =>
-  ClSF (Eff es) cl ESPresenseDelta ESPresenseSnapshot
+  ClSF (Eff es) cl (Maybe ESPresenseDelta) ESPresenseSnapshot
 aggregateESPresenseDeltaS =
   effReaderS @ESPresenseConfig $
-    feedback emptyESPresenseState proc ((delta, cfg), prev) -> do
-      let !new = applyESPresenseDelta delta prev
+    feedback emptyESPresenseState proc ((mdelta, cfg), prev) -> do
+      let !new = maybe prev (`applyESPresenseDelta` prev) mdelta
           !snapshot = toESPresenseSnapshot cfg new
       returnA -< (snapshot, new)
 

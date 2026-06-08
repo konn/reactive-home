@@ -242,10 +242,13 @@ processESPHeartbeat = proc tick -> do
   case mcfg of
     Nothing -> returnA -< ()
     Just _ -> do
-      delta <- hoistClSF withESPConfig espresenseDeltaS -< tick.tickESP
-      arrMCl (display Debug) -< delta
-      snapshot <- hoistClSF withESPConfig aggregateESPresenseDeltaS -< delta
-      arrMCl (display Debug) -< snapshot
+      mdelta <- hoistClSF withESPConfig espresenseDeltaS -< tick.tickESP
+      case mdelta of
+        Nothing -> returnA -< ()
+        Just delta -> do
+          arrMCl (display Debug) -< delta
+          snapshot <- hoistClSF withESPConfig aggregateESPresenseDeltaS -< mdelta
+          arrMCl (display Debug) -< snapshot
 
 bulkMackerelS ::
   ( Wreq :> es

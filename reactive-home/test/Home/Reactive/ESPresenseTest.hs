@@ -208,16 +208,17 @@ test_deltas =
                 absenceConfig
                 [TestInput baseTime (Event $ statusAt baseTime "entrance" 1)]
         deltas
-          @?= [ ESPresenseDelta
-                  { sensors =
-                      HM.fromList
-                        [ ("entrance", HM.fromList [("watch:", Just $ sensorStateAt baseTime 1)])
-                        ]
-                  , rooms =
-                      HM.fromList
-                        [ ("home", HM.fromList [("watch:", Just $ deviceStatus [("entrance", baseTime)])])
-                        ]
-                  }
+          @?= [ Just
+                  ESPresenseDelta
+                    { sensors =
+                        HM.fromList
+                          [ ("entrance", HM.fromList [("watch:", Just $ sensorStateAt baseTime 1)])
+                          ]
+                    , rooms =
+                        HM.fromList
+                          [ ("home", HM.fromList [("watch:", Just $ deviceStatus [("entrance", baseTime)])])
+                          ]
+                    }
               ]
     , testCase "heartbeat before timeout emits no deltas" $ do
         let deltas =
@@ -227,10 +228,7 @@ test_deltas =
                 , TestInput (addUTCTime 1 baseTime) Heartbeat
                 ]
         last deltas
-          @?= ESPresenseDelta
-            { sensors = HM.empty
-            , rooms = HM.empty
-            }
+          @?= Nothing
     , testCase "heartbeat after sensor timeout emits sensor and room deletes" $ do
         let deltas =
               runDeltaInputs
@@ -239,10 +237,11 @@ test_deltas =
                 , TestInput (addUTCTime 3 baseTime) Heartbeat
                 ]
         last deltas
-          @?= ESPresenseDelta
-            { sensors = HM.fromList [("entrance", HM.fromList [("watch:", Nothing)])]
-            , rooms = HM.fromList [("home", HM.fromList [("watch:", Nothing)])]
-            }
+          @?= Just
+            ESPresenseDelta
+              { sensors = HM.fromList [("entrance", HM.fromList [("watch:", Nothing)])]
+              , rooms = HM.fromList [("home", HM.fromList [("watch:", Nothing)])]
+              }
     , testCase "expiring one of two sensors updates room status before final delete" $ do
         let bedroomTime = addUTCTime 0.5 baseTime
             deltas =
@@ -254,30 +253,34 @@ test_deltas =
                 , TestInput (addUTCTime 3 baseTime) Heartbeat
                 ]
         deltas
-          @?= [ ESPresenseDelta
-                  { sensors = HM.fromList [("entrance", HM.fromList [("watch:", Just $ sensorStateAt baseTime 1)])]
-                  , rooms = HM.fromList [("home", HM.fromList [("watch:", Just $ deviceStatus [("entrance", baseTime)])])]
-                  }
-              , ESPresenseDelta
-                  { sensors = HM.fromList [("bedroom", HM.fromList [("watch:", Just $ sensorStateAt bedroomTime 1)])]
-                  , rooms =
-                      HM.fromList
-                        [
-                          ( "home"
-                          , HM.fromList
-                              [ ("watch:", Just $ deviceStatus [("bedroom", bedroomTime), ("entrance", baseTime)])
-                              ]
-                          )
-                        ]
-                  }
-              , ESPresenseDelta
-                  { sensors = HM.fromList [("entrance", HM.fromList [("watch:", Nothing)])]
-                  , rooms = HM.fromList [("home", HM.fromList [("watch:", Just $ deviceStatus [("bedroom", bedroomTime)])])]
-                  }
-              , ESPresenseDelta
-                  { sensors = HM.fromList [("bedroom", HM.fromList [("watch:", Nothing)])]
-                  , rooms = HM.fromList [("home", HM.fromList [("watch:", Nothing)])]
-                  }
+          @?= [ Just
+                  ESPresenseDelta
+                    { sensors = HM.fromList [("entrance", HM.fromList [("watch:", Just $ sensorStateAt baseTime 1)])]
+                    , rooms = HM.fromList [("home", HM.fromList [("watch:", Just $ deviceStatus [("entrance", baseTime)])])]
+                    }
+              , Just
+                  ESPresenseDelta
+                    { sensors = HM.fromList [("bedroom", HM.fromList [("watch:", Just $ sensorStateAt bedroomTime 1)])]
+                    , rooms =
+                        HM.fromList
+                          [
+                            ( "home"
+                            , HM.fromList
+                                [ ("watch:", Just $ deviceStatus [("bedroom", bedroomTime), ("entrance", baseTime)])
+                                ]
+                            )
+                          ]
+                    }
+              , Just
+                  ESPresenseDelta
+                    { sensors = HM.fromList [("entrance", HM.fromList [("watch:", Nothing)])]
+                    , rooms = HM.fromList [("home", HM.fromList [("watch:", Just $ deviceStatus [("bedroom", bedroomTime)])])]
+                    }
+              , Just
+                  ESPresenseDelta
+                    { sensors = HM.fromList [("bedroom", HM.fromList [("watch:", Nothing)])]
+                    , rooms = HM.fromList [("home", HM.fromList [("watch:", Nothing)])]
+                    }
               ]
     , testCase "far distance removes room presence but keeps sensor state" $ do
         let farTime = addUTCTime 1 baseTime
@@ -288,10 +291,11 @@ test_deltas =
                 , TestInput farTime (Event $ statusAt farTime "entrance" 4)
                 ]
         last deltas
-          @?= ESPresenseDelta
-            { sensors = HM.fromList [("entrance", HM.fromList [("watch:", Just $ sensorStateAt farTime 4)])]
-            , rooms = HM.fromList [("home", HM.fromList [("watch:", Nothing)])]
-            }
+          @?= Just
+            ESPresenseDelta
+              { sensors = HM.fromList [("entrance", HM.fromList [("watch:", Just $ sensorStateAt farTime 4)])]
+              , rooms = HM.fromList [("home", HM.fromList [("watch:", Nothing)])]
+              }
     ]
 
 data TestInput = TestInput
@@ -311,7 +315,7 @@ type DeltaS =
     (Eff '[Reader ESPresenseConfig])
     TestClock
     (Heartbeated ESPStatus)
-    ESPresenseDelta
+    (Maybe ESPresenseDelta)
 
 runSnapshotInputs :: ESPresenseConfig -> [TestInput] -> [ESPresenseSnapshot]
 runSnapshotInputs cfg inputs =
@@ -330,11 +334,11 @@ runSnapshotInputs cfg inputs =
       Result signal' snapshot <- runReaderT (stepAutomaton signal input) timeInfo
       (snapshot :) <$> go signal' (Just at) rest
 
-runDeltaInputs :: ESPresenseConfig -> [TestInput] -> [ESPresenseDelta]
+runDeltaInputs :: ESPresenseConfig -> [TestInput] -> [Maybe ESPresenseDelta]
 runDeltaInputs cfg inputs =
   runPureEff $ runReader cfg $ go espresenseDeltaS Nothing inputs
   where
-    go :: DeltaS -> Maybe UTCTime -> [TestInput] -> Eff '[Reader ESPresenseConfig] [ESPresenseDelta]
+    go :: DeltaS -> Maybe UTCTime -> [TestInput] -> Eff '[Reader ESPresenseConfig] [Maybe ESPresenseDelta]
     go _ _ [] = pure []
     go signal previous (TestInput {..} : rest) = do
       let timeInfo =
