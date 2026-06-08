@@ -120,7 +120,7 @@ unlockEventS =
     returnA
       -<
         if
-          | occupied || near ->
+          | near || occupied && prev /= Vacant ->
               case prev of
                 Vacant -> (Just Unlock, Occupied)
                 _ -> (Nothing, Occupied)
@@ -130,16 +130,16 @@ unlockEventS =
 handleUnlockEvent ::
   ( Mqtt :> es
   , Reader UnlockConfig :> es
-  , Reader SesameConfig :> es
+  , Reader SesameEnv :> es
   ) =>
   UnlockEvent -> Eff es ()
 handleUnlockEvent Unlock = do
   locks <- asks @UnlockConfig (.locks)
-  sesames <- asks @SesameConfig (.devices)
-  prefix <- asks @SesameConfig (.prefix)
+  sesames <- asks @SesameEnv (.devices)
+  prefix <- asks @SesameEnv (.prefix)
   for_ locks \lock -> do
     case HM.lookup lock sesames of
       Nothing -> pure () -- TODO: Log the error.
       Just dev -> do
         let topic = Topic prefix <> Topic dev.uuid.raw <> "set"
-        publish_ topic "UNLOCK"
+        publish_ topic "UNLOCKED"

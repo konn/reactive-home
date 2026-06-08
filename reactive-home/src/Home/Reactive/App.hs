@@ -25,7 +25,7 @@ import Control.Applicative ((<**>))
 import Control.Exception (throwIO)
 import Control.Monad (forM_)
 import Control.Monad.Trans.Class (lift)
-import Data.Functor ((<&>))
+import Data.Functor (void, (<&>))
 import Data.Generics.Labels ()
 import Data.List.NonEmpty qualified as NE
 import Data.Maybe (fromMaybe)
@@ -238,6 +238,7 @@ appBuffer =
 processESPHeartbeat ::
   ( Reader HomeEnv :> es
   , Console :> es
+  , Mqtt :> es
   ) =>
   ClSF (Eff es) (ESPHeartbeatClock es) AppTick ()
 processESPHeartbeat = proc tick -> do
@@ -256,8 +257,19 @@ processESPHeartbeat = proc tick -> do
           case cfg of
             Nothing -> returnA -< ()
             Just {} -> do
-              -- FIXME: to dirty!
-              arrMCl (display Debug . ("ESPUnlock: " <>) . show) <-< hoistClSF withUnlockConfig unlockEventS -< snapshot
+              -- FIXME: too dirty!
+              result <- hoistClSF withUnlockConfig unlockEventS -< snapshot
+              arrMCl (display Debug . ("ESPUnlock: " <>) . show) -< result
+              void $ mapMaybe (hoistClSF withSesameConfig $ hoistClSF withUnlockConfig $ arrMCl handleUnlockEvent) -< result
+
+withSesameConfig ::
+  (Reader HomeEnv :> es) =>
+  Eff (Reader SesameEnv : es) c -> Eff es c
+withSesameConfig action = do
+  cfg <- asks @HomeEnv (.sesame)
+  case cfg of
+    Nothing -> error "SesameConfig not found in environment"
+    Just sesameCfg -> runReader sesameCfg action
 
 withUnlockConfig ::
   (Reader HomeEnv :> es) =>
