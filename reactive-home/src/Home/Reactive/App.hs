@@ -32,11 +32,14 @@ import Data.Sequence (Seq)
 import Data.Sequence qualified as Seq
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
+import Data.Time (defaultTimeLocale, getZonedTime)
+import Data.Time.Format (formatTime)
 import Effectful
 import Effectful.Concurrent (Concurrent, runConcurrent)
 import Effectful.Console.ByteString (Console, runConsole)
 import Effectful.Console.ByteString qualified as Console
 import Effectful.Console.ByteString qualified as Eff
+import Effectful.Dispatch.Static (unsafeEff_)
 import Effectful.Network.Mqtt
 import Effectful.Reader.Static (Reader, asks, runReader)
 import Effectful.Wreq (Wreq, runWreq)
@@ -264,17 +267,23 @@ mainLoop ::
   ) =>
   Rhine (Eff es) (AppClock es) () ()
 mainLoop =
-  processMqtt @@ EffMqttClock
+  processMqtt
+    @@ EffMqttClock
     >-- appBuffer
-    --> ( processESPHeartbeat @@ ioClock waitClock
-            |@| bulkMackerelS @@ ioClock waitClock
+    --> ( processESPHeartbeat
+            @@ ioClock waitClock
+            |@| bulkMackerelS
+              @@ ioClock waitClock
         )
 
 display :: (Reader HomeEnv :> es, Console :> es, Show a) => LogLevel -> a -> Eff es ()
 display level a = do
   minLevel <- asks @HomeEnv (.logLevel)
   if level >= minLevel
-    then Console.putStrLn . TE.encodeUtf8 . T.pack . show $ a
+    then do
+      now <- unsafeEff_ getZonedTime
+      let timestamp = formatTime defaultTimeLocale "[%Y-%m-%d %H:%M:%S %Z]" now
+      Console.putStrLn . TE.encodeUtf8 . T.pack . (timestamp <>) . show $ a
     else pure ()
 
 application ::
