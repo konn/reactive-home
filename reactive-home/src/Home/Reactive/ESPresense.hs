@@ -15,6 +15,10 @@
 
 module Home.Reactive.ESPresense (
   ESPresenseSnapshot (..),
+  ESPresensePatch,
+  ESPresenseDelta (..),
+  espresenseDeltaS,
+  aggregateESPresenseDeltaS,
   espresenseSnapshotS,
   ESPSensor (..),
   Duration (),
@@ -27,6 +31,7 @@ module Home.Reactive.ESPresense (
   ESPresenseConfig (..),
   Room (..),
   RoomSensor (..),
+  DeviceStatus (..),
   ESPSensorName,
   ESPDeviceId,
   espresenseConfigCodec,
@@ -89,22 +94,55 @@ data ESPresenseSnapshot = ESPresenseSnapshot
   deriving (Show, Eq, Ord, Generic)
   deriving anyclass (FromJSON, ToJSON)
 
+type ESPresensePatch k v = HashMap k (Maybe v)
+
+data ESPresenseDelta = ESPresenseDelta
+  { sensors :: HashMap ESPSensorName (ESPresensePatch ESPDeviceId ESPSensorState)
+  , rooms :: HashMap T.Text (ESPresensePatch ESPDeviceId DeviceStatus)
+  }
+  deriving (Show, Eq, Ord, Generic)
+  deriving anyclass (FromJSON, ToJSON)
+
 data Heartbeated a = Heartbeat | Event !a
   deriving (Show, Eq, Ord, Generic, Functor, Foldable, Traversable)
+
+espresenseDeltaS ::
+  ( Time cl ~ UTCTime
+  , Reader ESPresenseConfig :> es
+  ) =>
+  ClSF (Eff es) cl (Heartbeated ESPStatus) ESPresenseDelta
+espresenseDeltaS = effReaderS @ESPresenseConfig proc (evt, cfg) -> do
+  sensors <-
+    fmap (HM.filter (not . HM.null)) (parallely sensorStatusDeltaS)
+      -<
+        HM.fromList
+          [ (sensor.name, (sensor, evt))
+          | sensor <- cfg.sensors
+          ]
+
+  rooms <-
+    fmap (HM.filter (not . HM.null)) (parallely roomPresenceDeltaS)
+      -<
+        HM.map (,evt) cfg.rooms
+
+  returnA -< ESPresenseDelta {..}
+
+aggregateESPresenseDeltaS ::
+  (Reader ESPresenseConfig :> es) =>
+  ClSF (Eff es) cl ESPresenseDelta ESPresenseSnapshot
+aggregateESPresenseDeltaS =
+  effReaderS @ESPresenseConfig $
+    feedback emptyESPresenseState proc ((delta, cfg), prev) -> do
+      let !new = applyESPresenseDelta delta prev
+          !snapshot = toESPresenseSnapshot cfg new
+      returnA -< (snapshot, new)
 
 espresenseSnapshotS ::
   ( Time cl ~ UTCTime
   , Reader ESPresenseConfig :> es
   ) =>
   ClSF (Eff es) cl (Heartbeated ESPStatus) ESPresenseSnapshot
-espresenseSnapshotS = effReaderS @ESPresenseConfig proc (evt, cfg) -> do
-  let stt = case evt of
-        Heartbeat -> Nothing
-        Event status -> Just status
-  sensors <- aggregateESPStatus -< stt
-
-  rooms <- parallely roomPresenceS -< HM.map (,evt) cfg.rooms
-  returnA -< ESPresenseSnapshot {..}
+espresenseSnapshotS = espresenseDeltaS >>> aggregateESPresenseDeltaS
 
 expireSensorSnapshot ::
   ESPresenseConfig ->
@@ -245,10 +283,10 @@ data DeviceStatus = DeviceStatus
   deriving (Show, Eq, Ord, Generic)
   deriving anyclass (ToJSON, FromJSON)
 
-roomPresenceS ::
+roomPresenceDeltaS ::
   (Time cl ~ UTCTime, Reader ESPresenseConfig :> es) =>
-  ClSF (Eff es) cl (Room, Heartbeated ESPStatus) [DeviceStatus]
-roomPresenceS = effReaderS @ESPresenseConfig $
+  ClSF (Eff es) cl (Room, Heartbeated ESPStatus) (ESPresensePatch ESPDeviceId DeviceStatus)
+roomPresenceDeltaS = effReaderS @ESPresenseConfig $
   feedback HM.empty proc (((room, evt), cfg), prevOccupants) -> do
     TimeInfo {..} <- timeInfo -< ()
     let !occupants =
@@ -278,18 +316,20 @@ roomPresenceS = effReaderS @ESPresenseConfig $
               then returnA -< HM.insert (sensor.name, stt.id) stt.timestamp occupants
               else returnA -< HM.delete (sensor.name, stt.id) occupants
       _ -> returnA -< occupants
-    returnA -< (toOccupancyList occupants', occupants')
+    let !delta = diffPatch (toOccupancyMap prevOccupants) (toOccupancyMap occupants')
+    returnA -< (delta, occupants')
 
 sensorTimeout :: ESPresenseConfig -> ESPSensorName -> Diff UTCTime
 sensorTimeout cfg sensorName =
   maybe 0 (.timeout.seconds) $ find (\sensor -> sensor.name == sensorName) cfg.sensors
 
-toOccupancyList :: HashMap (ESPSensorName, ESPDeviceId) UTCTime -> [DeviceStatus]
-toOccupancyList =
-  map
-    ( \(device, (seenBy, Max lastSeen)) ->
-        DeviceStatus {device, seenBy = DLNE.toNonEmpty seenBy, lastSeen}
-    )
+toOccupancyMap :: HashMap (ESPSensorName, ESPDeviceId) UTCTime -> HashMap ESPDeviceId DeviceStatus
+toOccupancyMap =
+  HM.fromList
+    . map
+      ( \(device, (seenBy, Max lastSeen)) ->
+          (device, DeviceStatus {device, seenBy = DLNE.toNonEmpty seenBy, lastSeen})
+      )
     . MHM.toList
     . HM.foldMapWithKey
       ( \(sensor, device) lastSeen ->
@@ -580,20 +620,109 @@ aggregateESPStatus =
             Just stt -> insertSensorState stt prev
       returnA -< (new, new)
 
+sensorStatusDeltaS ::
+  (Time cl ~ UTCTime) =>
+  ClSF (Eff es) cl (ESPSensor, Heartbeated ESPStatus) (ESPresensePatch ESPDeviceId ESPSensorState)
+sensorStatusDeltaS = feedback HM.empty proc ((sensor, evt), prev) -> do
+  TimeInfo {..} <- timeInfo -< ()
+  let !fresh =
+        HM.filter
+          (\sensorState -> absolute `diffTime` sensorState.timestamp < sensor.timeout.seconds)
+          prev
+      !new = case evt of
+        Event stt
+          | stt.sensor == sensor.name ->
+              HM.insert stt.id (sensorStateFromStatus stt) fresh
+        _ -> fresh
+      !delta = diffPatch prev new
+  returnA -< (delta, new)
+
 insertSensorState ::
   ESPStatus ->
   HashMap ESPSensorName (HashMap ESPDeviceId ESPSensorState) ->
   HashMap ESPSensorName (HashMap ESPDeviceId ESPSensorState)
 insertSensorState stt =
-  HM.insertWith HM.union stt.sensor (HM.singleton stt.id ssst)
+  HM.insertWith HM.union stt.sensor (HM.singleton stt.id (sensorStateFromStatus stt))
+
+sensorStateFromStatus :: ESPStatus -> ESPSensorState
+sensorStateFromStatus stt =
+  ESPSensorState
+    { timestamp = stt.timestamp
+    , distance = stt.distance
+    , variance = stt.var
+    , interval = stt.int
+    }
+
+data ESPresenseState = ESPresenseState
+  { sensors :: HashMap ESPSensorName (HashMap ESPDeviceId ESPSensorState)
+  , rooms :: HashMap T.Text (HashMap ESPDeviceId DeviceStatus)
+  }
+  deriving (Show, Eq, Ord, Generic)
+
+emptyESPresenseState :: ESPresenseState
+emptyESPresenseState =
+  ESPresenseState
+    { sensors = HM.empty
+    , rooms = HM.empty
+    }
+
+applyESPresenseDelta :: ESPresenseDelta -> ESPresenseState -> ESPresenseState
+applyESPresenseDelta delta prev =
+  ESPresenseState
+    { sensors =
+        HM.filter (not . HM.null) $
+          applyNestedPatch delta.sensors prev.sensors
+    , rooms =
+        HM.filter (not . HM.null) $
+          applyNestedPatch delta.rooms prev.rooms
+    }
+
+toESPresenseSnapshot :: ESPresenseConfig -> ESPresenseState -> ESPresenseSnapshot
+toESPresenseSnapshot cfg state =
+  ESPresenseSnapshot
+    { sensors = state.sensors
+    , rooms = HM.map HM.elems $ HM.union state.rooms emptyRooms
+    }
   where
-    ssst =
-      ESPSensorState
-        { timestamp = stt.timestamp
-        , distance = stt.distance
-        , variance = stt.var
-        , interval = stt.int
-        }
+    emptyRooms = HM.map (const HM.empty) cfg.rooms
+
+applyNestedPatch ::
+  (Hashable k, Hashable k') =>
+  HashMap k (ESPresensePatch k' v) ->
+  HashMap k (HashMap k' v) ->
+  HashMap k (HashMap k' v)
+applyNestedPatch patch prev =
+  HM.foldlWithKey'
+    (\acc key nestedPatch -> HM.insert key (applyPatch nestedPatch (HM.lookupDefault HM.empty key acc)) acc)
+    prev
+    patch
+
+applyPatch ::
+  (Hashable k) =>
+  ESPresensePatch k v ->
+  HashMap k v ->
+  HashMap k v
+applyPatch patch prev =
+  HM.foldlWithKey'
+    ( \acc key -> \case
+        Nothing -> HM.delete key acc
+        Just value -> HM.insert key value acc
+    )
+    prev
+    patch
+
+diffPatch ::
+  (Hashable k, Eq v) =>
+  HashMap k v ->
+  HashMap k v ->
+  ESPresensePatch k v
+diffPatch old new =
+  HM.foldMapWithKey
+    (\key _ -> if HM.member key new then HM.empty else HM.singleton key Nothing)
+    old
+    <> HM.foldMapWithKey
+      (\key value -> if HM.lookup key old == Just value then HM.empty else HM.singleton key (Just value))
+      new
 
 instance ToMackerelMetrics ESPStatus where
   toMetrics stt =

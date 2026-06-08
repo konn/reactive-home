@@ -5,10 +5,11 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Home.Reactive.ESPresenseTest (test_tomlParsing, test_roomAbsence) where
+module Home.Reactive.ESPresenseTest (test_tomlParsing, test_roomAbsence, test_deltas) where
 
 import Control.Monad.Trans.Reader (runReaderT)
 import Data.HashMap.Strict qualified as HM
+import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text qualified as T
 import Data.Time (UTCTime, addUTCTime, diffUTCTime)
 import Effectful (Eff, runPureEff)
@@ -21,15 +22,19 @@ import FRP.Rhine (
   stepAutomaton,
  )
 import Home.Reactive.ESPresense (
+  DeviceStatus (..),
   ESPSensor (..),
   ESPSensorName,
+  ESPSensorState (..),
   ESPStatus (..),
   ESPresenseConfig (..),
+  ESPresenseDelta (..),
   ESPresenseSnapshot (..),
   Heartbeated (..),
   Room (..),
   RoomSensor (..),
   espresenseConfigCodec,
+  espresenseDeltaS,
   espresenseSnapshotS,
   minutes,
   seconds,
@@ -193,6 +198,102 @@ test_roomAbsence =
         sensorDeviceCount "entrance" <$> snapshots @?= [1, 1, 0]
     ]
 
+test_deltas :: TestTree
+test_deltas =
+  testGroup
+    "deltas"
+    [ testCase "event emits sensor and room upserts" $ do
+        let deltas =
+              runDeltaInputs
+                absenceConfig
+                [TestInput baseTime (Event $ statusAt baseTime "entrance" 1)]
+        deltas
+          @?= [ ESPresenseDelta
+                  { sensors =
+                      HM.fromList
+                        [ ("entrance", HM.fromList [("watch:", Just $ sensorStateAt baseTime 1)])
+                        ]
+                  , rooms =
+                      HM.fromList
+                        [ ("home", HM.fromList [("watch:", Just $ deviceStatus [("entrance", baseTime)])])
+                        ]
+                  }
+              ]
+    , testCase "heartbeat before timeout emits no deltas" $ do
+        let deltas =
+              runDeltaInputs
+                absenceConfig
+                [ TestInput baseTime (Event $ statusAt baseTime "entrance" 1)
+                , TestInput (addUTCTime 1 baseTime) Heartbeat
+                ]
+        last deltas
+          @?= ESPresenseDelta
+            { sensors = HM.empty
+            , rooms = HM.empty
+            }
+    , testCase "heartbeat after sensor timeout emits sensor and room deletes" $ do
+        let deltas =
+              runDeltaInputs
+                absenceConfig
+                [ TestInput baseTime (Event $ statusAt baseTime "entrance" 1)
+                , TestInput (addUTCTime 3 baseTime) Heartbeat
+                ]
+        last deltas
+          @?= ESPresenseDelta
+            { sensors = HM.fromList [("entrance", HM.fromList [("watch:", Nothing)])]
+            , rooms = HM.fromList [("home", HM.fromList [("watch:", Nothing)])]
+            }
+    , testCase "expiring one of two sensors updates room status before final delete" $ do
+        let bedroomTime = addUTCTime 0.5 baseTime
+            deltas =
+              runDeltaInputs
+                absenceConfig
+                [ TestInput baseTime (Event $ statusAt baseTime "entrance" 1)
+                , TestInput bedroomTime (Event $ statusAt bedroomTime "bedroom" 1)
+                , TestInput (addUTCTime 2.25 baseTime) Heartbeat
+                , TestInput (addUTCTime 3 baseTime) Heartbeat
+                ]
+        deltas
+          @?= [ ESPresenseDelta
+                  { sensors = HM.fromList [("entrance", HM.fromList [("watch:", Just $ sensorStateAt baseTime 1)])]
+                  , rooms = HM.fromList [("home", HM.fromList [("watch:", Just $ deviceStatus [("entrance", baseTime)])])]
+                  }
+              , ESPresenseDelta
+                  { sensors = HM.fromList [("bedroom", HM.fromList [("watch:", Just $ sensorStateAt bedroomTime 1)])]
+                  , rooms =
+                      HM.fromList
+                        [
+                          ( "home"
+                          , HM.fromList
+                              [ ("watch:", Just $ deviceStatus [("bedroom", bedroomTime), ("entrance", baseTime)])
+                              ]
+                          )
+                        ]
+                  }
+              , ESPresenseDelta
+                  { sensors = HM.fromList [("entrance", HM.fromList [("watch:", Nothing)])]
+                  , rooms = HM.fromList [("home", HM.fromList [("watch:", Just $ deviceStatus [("bedroom", bedroomTime)])])]
+                  }
+              , ESPresenseDelta
+                  { sensors = HM.fromList [("bedroom", HM.fromList [("watch:", Nothing)])]
+                  , rooms = HM.fromList [("home", HM.fromList [("watch:", Nothing)])]
+                  }
+              ]
+    , testCase "far distance removes room presence but keeps sensor state" $ do
+        let farTime = addUTCTime 1 baseTime
+            deltas =
+              runDeltaInputs
+                absenceConfig
+                [ TestInput baseTime (Event $ statusAt baseTime "entrance" 1)
+                , TestInput farTime (Event $ statusAt farTime "entrance" 4)
+                ]
+        last deltas
+          @?= ESPresenseDelta
+            { sensors = HM.fromList [("entrance", HM.fromList [("watch:", Just $ sensorStateAt farTime 4)])]
+            , rooms = HM.fromList [("home", HM.fromList [("watch:", Nothing)])]
+            }
+    ]
+
 data TestInput = TestInput
   { at :: !UTCTime
   , input :: !(Heartbeated ESPStatus)
@@ -204,6 +305,13 @@ type SnapshotS =
     TestClock
     (Heartbeated ESPStatus)
     ESPresenseSnapshot
+
+type DeltaS =
+  ClSF
+    (Eff '[Reader ESPresenseConfig])
+    TestClock
+    (Heartbeated ESPStatus)
+    ESPresenseDelta
 
 runSnapshotInputs :: ESPresenseConfig -> [TestInput] -> [ESPresenseSnapshot]
 runSnapshotInputs cfg inputs =
@@ -222,9 +330,44 @@ runSnapshotInputs cfg inputs =
       Result signal' snapshot <- runReaderT (stepAutomaton signal input) timeInfo
       (snapshot :) <$> go signal' (Just at) rest
 
+runDeltaInputs :: ESPresenseConfig -> [TestInput] -> [ESPresenseDelta]
+runDeltaInputs cfg inputs =
+  runPureEff $ runReader cfg $ go espresenseDeltaS Nothing inputs
+  where
+    go :: DeltaS -> Maybe UTCTime -> [TestInput] -> Eff '[Reader ESPresenseConfig] [ESPresenseDelta]
+    go _ _ [] = pure []
+    go signal previous (TestInput {..} : rest) = do
+      let timeInfo =
+            TimeInfo
+              { sinceLast = maybe 0 (realToFrac . (at `diffUTCTime`)) previous
+              , sinceInit = realToFrac $ at `diffUTCTime` baseTime
+              , absolute = at
+              , tag = ()
+              }
+      Result signal' delta <- runReaderT (stepAutomaton signal input) timeInfo
+      (delta :) <$> go signal' (Just at) rest
+
 sensorDeviceCount :: ESPSensorName -> ESPresenseSnapshot -> Int
 sensorDeviceCount sensor snapshot =
   maybe 0 HM.size $ HM.lookup sensor snapshot.sensors
+
+sensorStateAt :: UTCTime -> Float -> ESPSensorState
+sensorStateAt timestamp distance =
+  ESPSensorState
+    { timestamp
+    , distance
+    , variance = 0.1
+    , interval = 300
+    }
+
+deviceStatus :: [(ESPSensorName, UTCTime)] -> DeviceStatus
+deviceStatus [] = error "deviceStatus test helper needs at least one sensor"
+deviceStatus (seen : seenRest) =
+  DeviceStatus
+    { device = "watch:"
+    , seenBy = seen :| seenRest
+    , lastSeen = maximum (snd <$> (seen : seenRest))
+    }
 
 absenceConfig :: ESPresenseConfig
 absenceConfig =

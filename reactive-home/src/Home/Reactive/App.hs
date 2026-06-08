@@ -13,6 +13,7 @@
 
 module Home.Reactive.App (
   defaultMainWith,
+  application,
   cliOptsP,
   CLIOpts (..),
   Config (..),
@@ -241,7 +242,9 @@ processESPHeartbeat = proc tick -> do
   case mcfg of
     Nothing -> returnA -< ()
     Just _ -> do
-      snapshot <- hoistClSF withESPConfig espresenseSnapshotS -< tick.tickESP
+      delta <- hoistClSF withESPConfig espresenseDeltaS -< tick.tickESP
+      arrMCl (display Debug) -< delta
+      snapshot <- hoistClSF withESPConfig aggregateESPresenseDeltaS -< delta
       arrMCl (display Debug) -< snapshot
 
 bulkMackerelS ::
@@ -273,7 +276,7 @@ mainLoop =
     --> ( processESPHeartbeat
             @@ ioClock waitClock
             |@| bulkMackerelS
-            @@ ioClock waitClock
+              @@ ioClock waitClock
         )
 
 display :: (Reader HomeEnv :> es, Console :> es, Show a) => LogLevel -> a -> Eff es ()
