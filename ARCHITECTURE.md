@@ -21,9 +21,10 @@ families:
   scaffolding.
   Its ESPresense wrapper subscribes to configured device/sensor topics, keeps
   per-sensor distance snapshots, and derives room presence as lists of device
-  ids from room sensor distance rules. ESPresense room expiry is driven by a
-  Rhine heartbeat clock in parallel with the Mackerel batching clock, so stale
-  presence is removed even when no new MQTT report arrives.
+  ids from room sensor distance rules. ESPresense sensor snapshots and room
+  presence expire on a Rhine heartbeat clock in parallel with the Mackerel
+  batching clock, so stale presence is removed even when no new MQTT report
+  arrives.
   The app defaults to broker-assigned MQTT client identifiers; a stable
   `clientId` is an optional top-level config setting for deployments that need
   one.

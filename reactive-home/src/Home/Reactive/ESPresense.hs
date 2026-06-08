@@ -106,6 +106,19 @@ espresenseSnapshotS = effReaderS @ESPresenseConfig proc (evt, cfg) -> do
   rooms <- parallely roomPresenceS -< HM.map (,evt) cfg.rooms
   returnA -< ESPresenseSnapshot {..}
 
+expireSensorSnapshot ::
+  ESPresenseConfig ->
+  UTCTime ->
+  HashMap ESPSensorName (HashMap ESPDeviceId ESPSensorState) ->
+  HashMap ESPSensorName (HashMap ESPDeviceId ESPSensorState)
+expireSensorSnapshot cfg now =
+  HM.mapMaybeWithKey \sensorName devices ->
+    let !freshDevices =
+          HM.filter
+            (\sensorState -> now `diffTime` sensorState.timestamp < sensorTimeout cfg sensorName)
+            devices
+     in if HM.null freshDevices then Nothing else Just freshDevices
+
 data ESPSensor = ESPSensor
   { name :: !ESPSensorName
   , max_distance :: !Float
@@ -552,24 +565,35 @@ parseESPStatusS = proc msg -> do
   returnA -< uncurry (buildESPStatus absolute) <$> parseRawESPStatus msg
 
 aggregateESPStatus ::
+  (Reader ESPresenseConfig :> es) =>
   BehaviourF
     (Eff es)
     UTCTime
     (Maybe ESPStatus)
     (HashMap ESPSensorName (HashMap ESPDeviceId ESPSensorState))
-aggregateESPStatus = feedback HM.empty $ arr \(!mest, !prev) ->
-  case mest of
-    Nothing -> (prev, prev)
-    Just stt ->
-      let ssst =
-            ESPSensorState
-              { timestamp = stt.timestamp
-              , distance = stt.distance
-              , variance = stt.var
-              , interval = stt.int
-              }
-          !new = HM.insertWith HM.union stt.sensor (HM.singleton stt.id ssst) prev
-       in (new, new)
+aggregateESPStatus =
+  effReaderS @ESPresenseConfig $
+    feedback HM.empty proc ((!mest, cfg), !prev) -> do
+      TimeInfo {..} <- timeInfo -< ()
+      let !new = expireSensorSnapshot cfg absolute $ case mest of
+            Nothing -> prev
+            Just stt -> insertSensorState stt prev
+      returnA -< (new, new)
+
+insertSensorState ::
+  ESPStatus ->
+  HashMap ESPSensorName (HashMap ESPDeviceId ESPSensorState) ->
+  HashMap ESPSensorName (HashMap ESPDeviceId ESPSensorState)
+insertSensorState stt =
+  HM.insertWith HM.union stt.sensor (HM.singleton stt.id ssst)
+  where
+    ssst =
+      ESPSensorState
+        { timestamp = stt.timestamp
+        , distance = stt.distance
+        , variance = stt.var
+        , interval = stt.int
+        }
 
 instance ToMackerelMetrics ESPStatus where
   toMetrics stt =

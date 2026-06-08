@@ -182,6 +182,15 @@ test_roomAbsence =
                 , TestInput (addUTCTime 1 baseTime) Heartbeat
                 ]
         length ((last snapshots).rooms HM.! "home") @?= 1
+    , testCase "heartbeat removes stale sensor snapshots after ESP sensor timeout" $ do
+        let snapshots =
+              runSnapshotInputs
+                absenceConfig
+                [ TestInput baseTime (Event $ statusAt baseTime "entrance" 1)
+                , TestInput (addUTCTime 1 baseTime) Heartbeat
+                , TestInput (addUTCTime 3 baseTime) Heartbeat
+                ]
+        sensorDeviceCount "entrance" <$> snapshots @?= [1, 1, 0]
     ]
 
 data TestInput = TestInput
@@ -212,6 +221,10 @@ runSnapshotInputs cfg inputs =
               }
       Result signal' snapshot <- runReaderT (stepAutomaton signal input) timeInfo
       (snapshot :) <$> go signal' (Just at) rest
+
+sensorDeviceCount :: ESPSensorName -> ESPresenseSnapshot -> Int
+sensorDeviceCount sensor snapshot =
+  maybe 0 HM.size $ HM.lookup sensor snapshot.sensors
 
 absenceConfig :: ESPresenseConfig
 absenceConfig =
