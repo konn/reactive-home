@@ -252,7 +252,12 @@ processESPHeartbeat = proc tick -> do
           arrMCl (display Debug) -< delta
           snapshot <- hoistClSF withESPConfig aggregateESPresenseDeltaS -< mdelta
           arrMCl (display Debug) -< snapshot
-          arrMCl (display Debug . ("ESPUnlock: " <>) . show) <-< hoistClSF withUnlockConfig unlockEventS -< snapshot
+          cfg <- constMCl (asks @HomeEnv (.unlock)) -< ()
+          case cfg of
+            Nothing -> returnA -< ()
+            Just {} -> do
+              -- FIXME: to dirty!
+              arrMCl (display Debug . ("ESPUnlock: " <>) . show) <-< hoistClSF withUnlockConfig unlockEventS -< snapshot
 
 withUnlockConfig ::
   (Reader HomeEnv :> es) =>
