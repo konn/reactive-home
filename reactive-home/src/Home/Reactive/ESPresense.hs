@@ -181,6 +181,7 @@ data SensorParams = SensorParams
   , window :: !Int
   , timeout :: !Duration
   , distance :: !Float
+  , timestamp :: !UTCTime
   , sensor :: !ESPSensorName
   , device :: !ESPDeviceId
   }
@@ -219,8 +220,7 @@ sensorPresenceS = proc SensorParams {..} -> do
           , timeout = timeout
           , distance = distance
           }
-  let !lastSeen = absolute
-      !fresh = absolute `diffTime` lastSeen < timeout.seconds
+  let !fresh = absolute `diffTime` timestamp < timeout.seconds
       !present = maybe False (<= threshold) avg && fresh
   returnA -< present
 
@@ -241,7 +241,11 @@ roomPresenceS = effReaderS @ESPresenseConfig $
     let !occupants =
           HM.filter
             (\stt -> absolute `diffTime` stt < room.timeout.seconds)
-            prevOccupants
+            $ HM.filterWithKey
+              ( \(sensorName, _) stt ->
+                  absolute `diffTime` stt < sensorTimeout cfg sensorName
+              )
+              prevOccupants
     occupants' <- case evt of
       Event stt
         | Just sensor <- find (\s -> s.name == stt.sensor) cfg.sensors
@@ -250,17 +254,22 @@ roomPresenceS = effReaderS @ESPresenseConfig $
                   SensorParams
                     { threshold = sensorCfg.distance
                     , window = fromMaybe 5 sensor.window
-                    , timeout = room.timeout
+                    , timeout = sensor.timeout
                     , distance = stt.distance
+                    , timestamp = stt.timestamp
                     , sensor = stt.sensor
                     , device = stt.id
                     }
             present <- sensorPresenceS -< ps
             if present
-              then returnA -< HM.insert (sensor.name, stt.id) absolute occupants
+              then returnA -< HM.insert (sensor.name, stt.id) stt.timestamp occupants
               else returnA -< HM.delete (sensor.name, stt.id) occupants
       _ -> returnA -< occupants
     returnA -< (toOccupancyList occupants', occupants')
+
+sensorTimeout :: ESPresenseConfig -> ESPSensorName -> Diff UTCTime
+sensorTimeout cfg sensorName =
+  maybe 0 (.timeout.seconds) $ find (\sensor -> sensor.name == sensorName) cfg.sensors
 
 toOccupancyList :: HashMap (ESPSensorName, ESPDeviceId) UTCTime -> [DeviceStatus]
 toOccupancyList =

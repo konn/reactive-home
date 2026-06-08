@@ -128,9 +128,13 @@ test-suite reactive-home-test
     -with-rtsopts=-N
 
   build-depends:
+    effectful,
     reactive-home,
+    rhine,
     tasty,
     tasty-hunit,
     text,
+    time,
     tomland,
+    transformers,
     unordered-containers,
