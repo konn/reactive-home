@@ -52,6 +52,7 @@ import Home.Reactive.MQTT
 import Home.Reactive.Metrics.Mackerel
 import Home.Reactive.Orphans ()
 import Home.Reactive.Sesame5
+import Home.Reactive.Unlock
 import Options.Applicative qualified as Opts
 import Toml hiding (first, map)
 
@@ -64,6 +65,7 @@ data Config = Config
   , espresense :: !(Maybe ESPresenseConfig)
   , sesame :: !(Maybe SesameConfig)
   , mackerel :: !(Maybe MackerelConfig)
+  , unlock :: !(Maybe UnlockConfig)
   , logLevel :: !(Maybe LogLevel)
   }
   deriving (Show, Eq, Ord, Generic)
@@ -102,6 +104,7 @@ data HomeEnv = HomeEnv
   , sesame :: {-# UNPACK #-} !(Maybe SesameEnv)
   , espresense :: !(Maybe ESPresenseConfig)
   , mackerel :: !(Maybe MackerelConfig)
+  , unlock :: !(Maybe UnlockConfig)
   , logLevel :: !LogLevel
   }
   deriving (Generic)
@@ -249,6 +252,16 @@ processESPHeartbeat = proc tick -> do
           arrMCl (display Debug) -< delta
           snapshot <- hoistClSF withESPConfig aggregateESPresenseDeltaS -< mdelta
           arrMCl (display Debug) -< snapshot
+          arrMCl (display Debug . ("ESPUnlock: " <>) . show) <-< hoistClSF withUnlockConfig unlockEventS -< snapshot
+
+withUnlockConfig ::
+  (Reader HomeEnv :> es) =>
+  Eff (Reader UnlockConfig : es) c -> Eff es c
+withUnlockConfig action = do
+  cfg <- asks @HomeEnv (.unlock)
+  case cfg of
+    Nothing -> error "UnlockConfig not found in environment"
+    Just unlockCfg -> runReader unlockCfg action
 
 bulkMackerelS ::
   ( Wreq :> es
@@ -279,7 +292,7 @@ mainLoop =
     --> ( processESPHeartbeat
             @@ ioClock waitClock
             |@| bulkMackerelS
-              @@ ioClock waitClock
+            @@ ioClock waitClock
         )
 
 display :: (Reader HomeEnv :> es, Console :> es, Show a) => LogLevel -> a -> Eff es ()
@@ -339,6 +352,7 @@ defaultMainWith config = do
       let sesame = fromSesameConfig <$> config.sesame
           espresense = config.espresense
           mackerel = config.mackerel
+          unlock = config.unlock
           logLevel = fromMaybe Info config.logLevel
       withMqttClient mqttCfg \mqtt sess ->
         runEff $

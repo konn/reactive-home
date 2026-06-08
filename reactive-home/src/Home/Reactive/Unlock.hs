@@ -36,6 +36,8 @@ import Home.Reactive.ESPresense
 import Home.Reactive.MQTT
 import Home.Reactive.Sesame5
 import Home.Reactive.Utils
+import Toml qualified
+import Toml.Codec.Generic
 
 -- TODO: Disable the unlock during the night shift.
 
@@ -53,6 +55,15 @@ data UnlockConfig = UnlockConfig
   }
   deriving stock (Eq, Show, Ord, Generic)
   deriving anyclass (Hashable, ToJSON, FromJSON, ToJSONKey)
+
+instance Toml.HasItemCodec UnlockConfig where
+  hasItemCodec = Right genericCodec
+
+instance Toml.HasItemCodec ApproachCondition where
+  hasItemCodec = Right genericCodec
+
+instance Toml.HasCodec UnlockConfig where
+  hasCodec = Toml.table genericCodec
 
 data ApproachCondition = ApproachCondition
   { sensor :: !ESPSensorName
