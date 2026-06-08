@@ -95,7 +95,7 @@ unlockEventS ::
   ) =>
   ClSF (Eff es) cl ESPresenseSnapshot (Maybe UnlockEvent)
 unlockEventS =
-  isRoomOccupied >-> spanned >-> feedback Vacant proc (Spanned {value = occupied, ..}, prev) -> do
+  isRoomOccupied >-> spanned >-> feedback Waiting proc (Spanned {value = occupied, ..}, prev) -> do
     thresh <- constMCl (asks @UnlockConfig (.delay)) -< ()
     returnA
       -<
