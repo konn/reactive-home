@@ -315,13 +315,15 @@ test_unlockHeartbeat =
         let vacantTime = addUTCTime 1 baseTime
             readyTime = addUTCTime 5 baseTime
             returnTime = addUTCTime 6 baseTime
+            occupiedTime = addUTCTime 7 baseTime
             snapshots =
               [ TestSnapshot baseTime (occupiedSnapshot baseTime)
               , TestSnapshot vacantTime vacantSnapshot
               , TestSnapshot readyTime vacantSnapshot
               , TestSnapshot returnTime (occupiedSnapshot returnTime)
+              , TestSnapshot occupiedTime (partialRoomOccupiedSnapshot occupiedTime)
               ]
-        runUnlockInputs unlockConfig snapshots @?= [Nothing, Nothing, Nothing, Just Unlock]
+        runUnlockInputs unlockConfig snapshots @?= [Nothing, Nothing, Nothing, Just Unlock, Nothing]
     , testCase "reports unlock feedback state on heartbeat snapshots" $ do
         let vacantTime = addUTCTime 1 baseTime
             readyTime = addUTCTime 5 baseTime
@@ -331,6 +333,32 @@ test_unlockHeartbeat =
               , TestSnapshot readyTime vacantSnapshot
               ]
         (.status) . fst <$> runUnlockFeedbackInputs unlockConfig snapshots @?= [Occupied, Waiting, Vacant]
+    , testCase "approach after two-sensor room re-occupies still emits unlock" $ do
+        let vacantTime = addUTCTime 1 baseTime
+            readyTime = addUTCTime (3 * 60 + 1) baseTime
+            bedroomReturnTime = addUTCTime (3 * 60 + 2) baseTime
+            approachTime = addUTCTime (3 * 60 + 3) baseTime
+            occupiedTime = addUTCTime (3 * 60 + 4) baseTime
+            partialOccupiedTime = addUTCTime (3 * 60 + 5) baseTime
+            snapshots =
+              [ TestSnapshot baseTime (exampleOccupiedSnapshot baseTime 6.0)
+              , TestSnapshot vacantTime vacantSnapshot
+              , TestSnapshot readyTime vacantSnapshot
+              , TestSnapshot bedroomReturnTime (exampleBedroomSnapshot bedroomReturnTime 4.0)
+              , TestSnapshot approachTime (exampleTwoSensorSnapshot bedroomReturnTime approachTime)
+              , TestSnapshot occupiedTime (exampleTwoSensorSnapshot bedroomReturnTime occupiedTime)
+              , TestSnapshot partialOccupiedTime (examplePartialRoomOccupiedSnapshot partialOccupiedTime)
+              ]
+        runUnlockInputs exampleUnlockConfig snapshots @?= [Nothing, Nothing, Nothing, Nothing, Just Unlock, Nothing, Nothing]
+    , testCase "heartbeat-only vacancy permits first approach unlock" $ do
+        let readyTime = addUTCTime (3 * 60 + 1) baseTime
+            approachTime = addUTCTime (3 * 60 + 2) baseTime
+            snapshots =
+              [ TestSnapshot baseTime vacantSnapshot
+              , TestSnapshot readyTime vacantSnapshot
+              , TestSnapshot approachTime (exampleOccupiedSnapshot approachTime 4.5)
+              ]
+        runUnlockInputs exampleUnlockConfig snapshots @?= [Nothing, Nothing, Just Unlock]
     ]
 
 data TestInput = TestInput
@@ -475,6 +503,53 @@ occupiedSnapshot timestamp =
     , rooms = HM.fromList [("home", [deviceStatus [("entrance", timestamp)]])]
     }
 
+partialRoomOccupiedSnapshot :: UTCTime -> ESPresenseSnapshot
+partialRoomOccupiedSnapshot timestamp =
+  ESPresenseSnapshot
+    { sensors =
+        HM.fromList
+          [ ("entrance", HM.fromList [("watch:", sensorStateAt timestamp 3.0)])
+          , ("bedroom", HM.fromList [("watch:", sensorStateAt timestamp 1.0)])
+          ]
+    , rooms = HM.fromList [("home", [deviceStatus [("bedroom", timestamp)]])]
+    }
+
+exampleOccupiedSnapshot :: UTCTime -> Float -> ESPresenseSnapshot
+exampleOccupiedSnapshot timestamp entranceDistance =
+  ESPresenseSnapshot
+    { sensors = HM.fromList [("entrance", HM.fromList [("watch:", sensorStateAt timestamp entranceDistance)])]
+    , rooms = HM.fromList [("home", [deviceStatus [("entrance", timestamp)]])]
+    }
+
+exampleBedroomSnapshot :: UTCTime -> Float -> ESPresenseSnapshot
+exampleBedroomSnapshot timestamp bedroomDistance =
+  ESPresenseSnapshot
+    { sensors = HM.fromList [("bedroom", HM.fromList [("watch:", sensorStateAt timestamp bedroomDistance)])]
+    , rooms = HM.fromList [("home", [deviceStatus [("bedroom", timestamp)]])]
+    }
+
+exampleTwoSensorSnapshot :: UTCTime -> UTCTime -> ESPresenseSnapshot
+exampleTwoSensorSnapshot bedroomTime entranceTime =
+  ESPresenseSnapshot
+    { sensors =
+        HM.fromList
+          [ ("bedroom", HM.fromList [("watch:", sensorStateAt bedroomTime 4.0)])
+          , ("entrance", HM.fromList [("watch:", sensorStateAt entranceTime 4.5)])
+          ]
+    , rooms = HM.fromList [("home", [deviceStatus [("bedroom", bedroomTime), ("entrance", entranceTime)]])]
+    }
+
+examplePartialRoomOccupiedSnapshot :: UTCTime -> ESPresenseSnapshot
+examplePartialRoomOccupiedSnapshot timestamp =
+  ESPresenseSnapshot
+    { sensors =
+        HM.fromList
+          [ ("entrance", HM.fromList [("watch:", sensorStateAt timestamp 7.0)])
+          , ("bedroom", HM.fromList [("watch:", sensorStateAt timestamp 4.0)])
+          ]
+    , rooms = HM.fromList [("home", [deviceStatus [("bedroom", timestamp)]])]
+    }
+
 unlockConfig :: UnlockConfig
 unlockConfig =
   UnlockConfig
@@ -486,6 +561,21 @@ unlockConfig =
             { sensor = "entrance"
             , device = "watch:"
             , distance = 2
+            }
+        ]
+    }
+
+exampleUnlockConfig :: UnlockConfig
+exampleUnlockConfig =
+  UnlockConfig
+    { room = "home"
+    , delay = minutes 3
+    , locks = []
+    , approach =
+        [ ApproachCondition
+            { sensor = "entrance"
+            , device = "watch:"
+            , distance = 5.0
             }
         ]
     }
