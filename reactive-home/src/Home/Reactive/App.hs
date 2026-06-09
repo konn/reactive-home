@@ -255,7 +255,8 @@ processESPHeartbeat = proc tick -> do
         Nothing -> returnA -< ()
         Just {} -> do
           -- FIXME: too dirty!
-          result <- hoistClSF withUnlockConfig unlockEventS -< snapshot
+          (fb, result) <- hoistClSF withUnlockConfig unlockFeedbackS -< snapshot
+          arrMCl (display Debug . ("ESP feedback: " <>) . show) -< fb
           void $ mapMaybe (arrMCl $ display Debug . ("ESPUnlock: " <>) . show) -< result
           void $ mapMaybe (hoistClSF withSesameConfig $ hoistClSF withUnlockConfig $ arrMCl handleUnlockEvent) -< result
 
@@ -306,7 +307,7 @@ mainLoop =
     --> ( processESPHeartbeat
             @@ ioClock waitClock
             |@| bulkMackerelS
-              @@ ioClock waitClock
+            @@ ioClock waitClock
         )
 
 display :: (Reader HomeEnv :> es, Console :> es, Show a) => LogLevel -> a -> Eff es ()

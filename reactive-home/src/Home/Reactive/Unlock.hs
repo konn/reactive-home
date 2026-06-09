@@ -7,6 +7,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE OrPatterns #-}
 {-# LANGUAGE OverloadedLabels #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -18,6 +19,9 @@ module Home.Reactive.Unlock (
   UnlockConfig (..),
   UnlockEvent (..),
   ApproachCondition (..),
+  UnlockStatus (..),
+  UnlockFeedback (..),
+  unlockFeedbackS,
   unlockEventS,
   handleUnlockEvent,
 ) where
@@ -103,8 +107,41 @@ data UnlockStatus
   | -- | Empty and waiting for the specified delay to pass
     Waiting
   | Vacant
+  | ReadyForUnlock
   deriving stock (Eq, Show, Ord, Generic)
   deriving anyclass (Hashable)
+
+data UnlockFeedback = UnlockFeedback
+  { near :: !Bool
+  , occupied :: !Bool
+  , duration :: !(Diff UTCTime)
+  , status :: !UnlockStatus
+  }
+  deriving stock (Eq, Show, Ord, Generic)
+  deriving anyclass (Hashable)
+
+unlockFeedbackS ::
+  ( Reader UnlockConfig :> es
+  , Time cl ~ UTCTime
+  ) =>
+  ClSF (Eff es) cl ESPresenseSnapshot (UnlockFeedback, Maybe UnlockEvent)
+unlockFeedbackS =
+  (anyApproachDetected &&& isRoomOccupied >-> spanned) >-> feedback Waiting proc ((near, Spanned {value = occupied, ..}), prev) -> do
+    thresh <- constMCl (asks @UnlockConfig (.delay)) -< ()
+    let !next =
+          if
+            | near && prev `elem` [Vacant, ReadyForUnlock] -> (Just Unlock, Occupied)
+            | occupied ->
+                case prev of
+                  (Vacant; ReadyForUnlock)
+                    | not near -> (Nothing, ReadyForUnlock)
+                    | otherwise -> (Just Unlock, Occupied)
+                  _ -> (Nothing, Occupied)
+            | duration >= thresh.seconds -> (Nothing, Vacant)
+            | otherwise -> (Nothing, Waiting)
+        !(event, status) = next
+        !fb = UnlockFeedback {near, occupied, duration, status}
+    returnA -< ((fb, event), status)
 
 -- | Emits 'Unlock' when the room becomes occupied after vacant for at least the specified delay.
 unlockEventS ::
@@ -112,18 +149,9 @@ unlockEventS ::
   , Time cl ~ UTCTime
   ) =>
   ClSF (Eff es) cl ESPresenseSnapshot (Maybe UnlockEvent)
-unlockEventS =
-  (anyApproachDetected &&& isRoomOccupied >-> spanned) >-> feedback Waiting proc ((near, Spanned {value = occupied, ..}), prev) -> do
-    thresh <- constMCl (asks @UnlockConfig (.delay)) -< ()
-    returnA
-      -<
-        if
-          | near || occupied && prev /= Vacant ->
-              case prev of
-                Vacant -> (Just Unlock, Occupied)
-                _ -> (Nothing, Occupied)
-          | duration >= thresh.seconds -> (Nothing, Vacant)
-          | otherwise -> (Nothing, Waiting)
+unlockEventS = proc snapshot -> do
+  (_, event) <- unlockFeedbackS -< snapshot
+  returnA -< event
 
 handleUnlockEvent ::
   ( Mqtt :> es

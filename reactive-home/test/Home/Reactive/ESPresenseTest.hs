@@ -43,7 +43,10 @@ import Home.Reactive.Unlock (
   ApproachCondition (..),
   UnlockConfig (..),
   UnlockEvent (..),
+  UnlockFeedback (..),
+  UnlockStatus (..),
   unlockEventS,
+  unlockFeedbackS,
  )
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
@@ -319,6 +322,15 @@ test_unlockHeartbeat =
               , TestSnapshot returnTime (occupiedSnapshot returnTime)
               ]
         runUnlockInputs unlockConfig snapshots @?= [Nothing, Nothing, Nothing, Just Unlock]
+    , testCase "reports unlock feedback state on heartbeat snapshots" $ do
+        let vacantTime = addUTCTime 1 baseTime
+            readyTime = addUTCTime 5 baseTime
+            snapshots =
+              [ TestSnapshot baseTime (occupiedSnapshot baseTime)
+              , TestSnapshot vacantTime vacantSnapshot
+              , TestSnapshot readyTime vacantSnapshot
+              ]
+        (.status) . fst <$> runUnlockFeedbackInputs unlockConfig snapshots @?= [Occupied, Waiting, Vacant]
     ]
 
 data TestInput = TestInput
@@ -351,6 +363,13 @@ type UnlockS =
     TestClock
     ESPresenseSnapshot
     (Maybe UnlockEvent)
+
+type UnlockFeedbackS =
+  ClSF
+    (Eff '[Reader UnlockConfig])
+    TestClock
+    ESPresenseSnapshot
+    (UnlockFeedback, Maybe UnlockEvent)
 
 runSnapshotInputs :: ESPresenseConfig -> [TestInput] -> [ESPresenseSnapshot]
 runSnapshotInputs cfg inputs =
@@ -391,6 +410,23 @@ runUnlockInputs cfg inputs =
   runPureEff $ runReader cfg $ go unlockEventS Nothing inputs
   where
     go :: UnlockS -> Maybe UTCTime -> [TestSnapshot] -> Eff '[Reader UnlockConfig] [Maybe UnlockEvent]
+    go _ _ [] = pure []
+    go signal previous (TestSnapshot {..} : rest) = do
+      let timeInfo =
+            TimeInfo
+              { sinceLast = maybe 0 (realToFrac . (at `diffUTCTime`)) previous
+              , sinceInit = realToFrac $ at `diffUTCTime` baseTime
+              , absolute = at
+              , tag = ()
+              }
+      Result signal' event <- runReaderT (stepAutomaton signal snapshot) timeInfo
+      (event :) <$> go signal' (Just at) rest
+
+runUnlockFeedbackInputs :: UnlockConfig -> [TestSnapshot] -> [(UnlockFeedback, Maybe UnlockEvent)]
+runUnlockFeedbackInputs cfg inputs =
+  runPureEff $ runReader cfg $ go unlockFeedbackS Nothing inputs
+  where
+    go :: UnlockFeedbackS -> Maybe UTCTime -> [TestSnapshot] -> Eff '[Reader UnlockConfig] [(UnlockFeedback, Maybe UnlockEvent)]
     go _ _ [] = pure []
     go signal previous (TestSnapshot {..} : rest) = do
       let timeInfo =
