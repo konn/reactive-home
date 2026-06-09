@@ -500,7 +500,6 @@ statusAt timestamp sensor distance =
     , id = "watch:"
     , name = "Watch"
     , rssi = -65
-    , rssiVar = 1
     , distance
     , var = 0.1
     , int = 300

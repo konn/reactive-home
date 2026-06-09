@@ -550,7 +550,6 @@ data RawESPStatus = RawESPStatus
   , id :: {-# UNPACK #-} !ESPDeviceId
   , name :: {-# UNPACK #-} !T.Text
   , rssi :: {-# UNPACK #-} !Float
-  , rssiVar :: {-# UNPACK #-} !Float
   , distance :: {-# UNPACK #-} !Float
   , var :: {-# UNPACK #-} !Float
   , int :: {-# UNPACK #-} !Int
@@ -565,7 +564,6 @@ data ESPStatus = ESPStatus
   , id :: {-# UNPACK #-} !ESPDeviceId
   , name :: {-# UNPACK #-} !T.Text
   , rssi :: {-# UNPACK #-} !Float
-  , rssiVar :: {-# UNPACK #-} !Float
   , distance :: {-# UNPACK #-} !Float
   , var :: {-# UNPACK #-} !Float
   , int :: {-# UNPACK #-} !Int
@@ -605,7 +603,6 @@ buildESPStatus timestamp sensor stt =
     , id = stt.id
     , name = stt.name
     , rssi = stt.rssi
-    , rssiVar = stt.rssiVar
     , distance = stt.distance
     , var = stt.var
     , int = stt.int
