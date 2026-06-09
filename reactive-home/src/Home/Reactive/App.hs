@@ -247,20 +247,17 @@ processESPHeartbeat = proc tick -> do
     Nothing -> returnA -< ()
     Just _ -> do
       mdelta <- hoistClSF withESPConfig espresenseDeltaS -< tick.tickESP
-      case mdelta of
+      void $ mapMaybe (arrMCl $ display Debug) -< mdelta
+      snapshot <- hoistClSF withESPConfig aggregateESPresenseDeltaS -< mdelta
+      void $ mapMaybe (arrMCl $ display Debug) -< snapshot <$ mdelta
+      cfg <- constMCl (asks @HomeEnv (.unlock)) -< ()
+      case cfg of
         Nothing -> returnA -< ()
-        Just delta -> do
-          arrMCl (display Debug) -< delta
-          snapshot <- hoistClSF withESPConfig aggregateESPresenseDeltaS -< mdelta
-          arrMCl (display Debug) -< snapshot
-          cfg <- constMCl (asks @HomeEnv (.unlock)) -< ()
-          case cfg of
-            Nothing -> returnA -< ()
-            Just {} -> do
-              -- FIXME: too dirty!
-              result <- hoistClSF withUnlockConfig unlockEventS -< snapshot
-              arrMCl (display Debug . ("ESPUnlock: " <>) . show) -< result
-              void $ mapMaybe (hoistClSF withSesameConfig $ hoistClSF withUnlockConfig $ arrMCl handleUnlockEvent) -< result
+        Just {} -> do
+          -- FIXME: too dirty!
+          result <- hoistClSF withUnlockConfig unlockEventS -< snapshot
+          void $ mapMaybe (arrMCl $ display Debug . ("ESPUnlock: " <>) . show) -< result
+          void $ mapMaybe (hoistClSF withSesameConfig $ hoistClSF withUnlockConfig $ arrMCl handleUnlockEvent) -< result
 
 withSesameConfig ::
   (Reader HomeEnv :> es) =>
@@ -309,7 +306,7 @@ mainLoop =
     --> ( processESPHeartbeat
             @@ ioClock waitClock
             |@| bulkMackerelS
-            @@ ioClock waitClock
+              @@ ioClock waitClock
         )
 
 display :: (Reader HomeEnv :> es, Console :> es, Show a) => LogLevel -> a -> Eff es ()

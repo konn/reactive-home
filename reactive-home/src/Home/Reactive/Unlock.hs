@@ -28,7 +28,6 @@ import Data.HashMap.Strict qualified as HM
 import Data.Hashable (Hashable)
 import Data.Text qualified as T
 import Effectful (Eff, (:>))
-import Effectful.Dispatch.Static (unsafeEff_)
 import Effectful.Network.Mqtt (Mqtt, publish_)
 import Effectful.Reader.Static (Reader, asks)
 import FRP.Rhine
@@ -114,9 +113,8 @@ unlockEventS ::
   ) =>
   ClSF (Eff es) cl ESPresenseSnapshot (Maybe UnlockEvent)
 unlockEventS =
-  (anyApproachDetected &&& isRoomOccupied >-> spanned) >-> feedback Waiting proc ((near, sp@Spanned {value = occupied, ..}), prev) -> do
+  (anyApproachDetected &&& isRoomOccupied >-> spanned) >-> feedback Waiting proc ((near, Spanned {value = occupied, ..}), prev) -> do
     thresh <- constMCl (asks @UnlockConfig (.delay)) -< ()
-    arrMCl (\(near, sp, prev) -> unsafeEff_ $ putStrLn $ "ESP feedback: " <> show (near, sp, prev)) -< (near, sp, prev)
     returnA
       -<
         if

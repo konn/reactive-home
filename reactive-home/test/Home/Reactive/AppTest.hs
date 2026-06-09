@@ -27,6 +27,7 @@ test_configParsing =
               , espresense = Nothing
               , sesame = Nothing
               , mackerel = Nothing
+              , unlock = Nothing
               , logLevel = Nothing
               }
     , testCase "clientId preserves explicit stable client identifiers" $

@@ -5,7 +5,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Home.Reactive.ESPresenseTest (test_tomlParsing, test_roomAbsence, test_deltas) where
+module Home.Reactive.ESPresenseTest (test_tomlParsing, test_roomAbsence, test_deltas, test_unlockHeartbeat) where
 
 import Control.Monad.Trans.Reader (runReaderT)
 import Data.HashMap.Strict qualified as HM
@@ -38,6 +38,12 @@ import Home.Reactive.ESPresense (
   espresenseSnapshotS,
   minutes,
   seconds,
+ )
+import Home.Reactive.Unlock (
+  ApproachCondition (..),
+  UnlockConfig (..),
+  UnlockEvent (..),
+  unlockEventS,
  )
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
@@ -298,9 +304,31 @@ test_deltas =
               }
     ]
 
+test_unlockHeartbeat :: TestTree
+test_unlockHeartbeat =
+  testGroup
+    "unlock heartbeat"
+    [ testCase "unchanged vacant snapshots advance waiting state to allow later unlock" $ do
+        let vacantTime = addUTCTime 1 baseTime
+            readyTime = addUTCTime 5 baseTime
+            returnTime = addUTCTime 6 baseTime
+            snapshots =
+              [ TestSnapshot baseTime (occupiedSnapshot baseTime)
+              , TestSnapshot vacantTime vacantSnapshot
+              , TestSnapshot readyTime vacantSnapshot
+              , TestSnapshot returnTime (occupiedSnapshot returnTime)
+              ]
+        runUnlockInputs unlockConfig snapshots @?= [Nothing, Nothing, Nothing, Just Unlock]
+    ]
+
 data TestInput = TestInput
   { at :: !UTCTime
   , input :: !(Heartbeated ESPStatus)
+  }
+
+data TestSnapshot = TestSnapshot
+  { at :: !UTCTime
+  , snapshot :: !ESPresenseSnapshot
   }
 
 type SnapshotS =
@@ -316,6 +344,13 @@ type DeltaS =
     TestClock
     (Heartbeated ESPStatus)
     (Maybe ESPresenseDelta)
+
+type UnlockS =
+  ClSF
+    (Eff '[Reader UnlockConfig])
+    TestClock
+    ESPresenseSnapshot
+    (Maybe UnlockEvent)
 
 runSnapshotInputs :: ESPresenseConfig -> [TestInput] -> [ESPresenseSnapshot]
 runSnapshotInputs cfg inputs =
@@ -351,6 +386,23 @@ runDeltaInputs cfg inputs =
       Result signal' delta <- runReaderT (stepAutomaton signal input) timeInfo
       (delta :) <$> go signal' (Just at) rest
 
+runUnlockInputs :: UnlockConfig -> [TestSnapshot] -> [Maybe UnlockEvent]
+runUnlockInputs cfg inputs =
+  runPureEff $ runReader cfg $ go unlockEventS Nothing inputs
+  where
+    go :: UnlockS -> Maybe UTCTime -> [TestSnapshot] -> Eff '[Reader UnlockConfig] [Maybe UnlockEvent]
+    go _ _ [] = pure []
+    go signal previous (TestSnapshot {..} : rest) = do
+      let timeInfo =
+            TimeInfo
+              { sinceLast = maybe 0 (realToFrac . (at `diffUTCTime`)) previous
+              , sinceInit = realToFrac $ at `diffUTCTime` baseTime
+              , absolute = at
+              , tag = ()
+              }
+      Result signal' event <- runReaderT (stepAutomaton signal snapshot) timeInfo
+      (event :) <$> go signal' (Just at) rest
+
 sensorDeviceCount :: ESPSensorName -> ESPresenseSnapshot -> Int
 sensorDeviceCount sensor snapshot =
   maybe 0 HM.size $ HM.lookup sensor snapshot.sensors
@@ -371,6 +423,35 @@ deviceStatus (seen : seenRest) =
     { device = "watch:"
     , seenBy = seen :| seenRest
     , lastSeen = maximum (snd <$> (seen : seenRest))
+    }
+
+vacantSnapshot :: ESPresenseSnapshot
+vacantSnapshot =
+  ESPresenseSnapshot
+    { sensors = HM.empty
+    , rooms = HM.fromList [("home", [])]
+    }
+
+occupiedSnapshot :: UTCTime -> ESPresenseSnapshot
+occupiedSnapshot timestamp =
+  ESPresenseSnapshot
+    { sensors = HM.fromList [("entrance", HM.fromList [("watch:", sensorStateAt timestamp 1)])]
+    , rooms = HM.fromList [("home", [deviceStatus [("entrance", timestamp)]])]
+    }
+
+unlockConfig :: UnlockConfig
+unlockConfig =
+  UnlockConfig
+    { room = "home"
+    , delay = seconds 3
+    , locks = []
+    , approach =
+        [ ApproachCondition
+            { sensor = "entrance"
+            , device = "watch:"
+            , distance = 2
+            }
+        ]
     }
 
 absenceConfig :: ESPresenseConfig
