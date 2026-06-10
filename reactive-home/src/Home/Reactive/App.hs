@@ -277,6 +277,7 @@ processESPHeartbeat = proc tick -> do
       mdelta <- hoistClSF withESPConfig espresenseDeltaS -< tick.tickESP
       void $ mapMaybe (arrMCl $ display Debug) -< mdelta
       snapshot <- hoistClSF withESPConfig aggregateESPresenseDeltaS -< mdelta
+      void $ arrMCl (display Debug . ("Mqtt Snapshot: " <>) . show) -< tick.tickMqttSnapshot
       void $ mapMaybe (arrMCl $ display Debug) -< snapshot <$ mdelta
       cfg <- constMCl (asks @HomeEnv (.unlock)) -< ()
       case cfg of
@@ -335,7 +336,7 @@ mainLoop =
     --> ( processESPHeartbeat
             @@ ioClock waitClock
             |@| bulkMackerelS
-              @@ ioClock waitClock
+            @@ ioClock waitClock
         )
 
 display :: (Reader HomeEnv :> es, Console :> es, Show a) => LogLevel -> a -> Eff es ()
