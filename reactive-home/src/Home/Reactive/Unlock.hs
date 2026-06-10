@@ -19,6 +19,7 @@ module Home.Reactive.Unlock (
   UnlockConfig (..),
   UnlockEvent (..),
   ApproachCondition (..),
+  DismissCondition (..),
   UnlockStatus (..),
   UnlockFeedback (..),
   unlockFeedbackS,
@@ -45,8 +46,6 @@ import Toml.Codec.Generic
 
 -- TODO: Disable the unlock during the night shift.
 
--- TODO: Use more fine-grained infor source than monolichic 'ESPresenseSnapshot'.
-
 data UnlockEvent = Unlock
   deriving stock (Eq, Show, Ord, Generic)
   deriving anyclass (Hashable, ToJSON, FromJSON, ToJSONKey)
@@ -56,18 +55,11 @@ data UnlockConfig = UnlockConfig
   , delay :: !Duration
   , locks :: ![T.Text]
   , approach :: [ApproachCondition]
+  , dismiss :: [DismissCondition]
   }
   deriving stock (Eq, Show, Ord, Generic)
   deriving anyclass (Hashable, ToJSON, FromJSON, ToJSONKey)
-
-instance Toml.HasItemCodec UnlockConfig where
-  hasItemCodec = Right genericCodec
-
-instance Toml.HasItemCodec ApproachCondition where
-  hasItemCodec = Right genericCodec
-
-instance Toml.HasCodec UnlockConfig where
-  hasCodec = Toml.table genericCodec
+  deriving (Toml.HasItemCodec, Toml.HasCodec) via Toml.TomlTable UnlockConfig
 
 data ApproachCondition = ApproachCondition
   { sensor :: !ESPSensorName
@@ -76,6 +68,14 @@ data ApproachCondition = ApproachCondition
   }
   deriving stock (Eq, Show, Ord, Generic)
   deriving anyclass (Hashable, ToJSON, FromJSON, ToJSONKey)
+  deriving (Toml.HasItemCodec, Toml.HasCodec) via Toml.TomlTable ApproachCondition
+
+data DismissCondition = DismissCondition {switch :: !T.Text}
+  deriving stock (Eq, Show, Ord, Generic)
+  deriving anyclass (Hashable, ToJSON, FromJSON, ToJSONKey)
+  deriving (Toml.HasItemCodec, Toml.HasCodec) via Toml.TomlTable DismissCondition
+
+-- TODO: Use more fine-grained infor source than monolichic 'ESPresenseSnapshot'.
 
 isRoomOccupied ::
   (Reader UnlockConfig :> es) =>
@@ -120,22 +120,32 @@ data UnlockFeedback = UnlockFeedback
   deriving stock (Eq, Show, Ord, Generic)
   deriving anyclass (Hashable)
 
+-- TODO: Use more fine-grained infor source than monolichic 'ESPresenseSnapshot'.
 unlockFeedbackS ::
   ( Reader UnlockConfig :> es
   , Time cl ~ UTCTime
   ) =>
-  ClSF (Eff es) cl ESPresenseSnapshot (UnlockFeedback, Maybe UnlockEvent)
+  ClSF (Eff es) cl (MqttSnapshot, ESPresenseSnapshot) (UnlockFeedback, Maybe UnlockEvent)
 unlockFeedbackS =
-  (anyApproachDetected &&& isRoomOccupied >-> spanned) >-> feedback Waiting proc ((near, Spanned {value = occupied, ..}), prev) -> do
+  (second (anyApproachDetected &&& isRoomOccupied >-> spanned)) >-> feedback Waiting proc ((mqtt, (near, Spanned {value = occupied, ..})), prev) -> do
     thresh <- constMCl (asks @UnlockConfig (.delay)) -< ()
-    let !next =
+    dismissal <- constMCl (asks @UnlockConfig (.dismiss)) -< ()
+    let !dismiss =
+          or
+            [ mqtt.switches HM.!? sw.switch == Just True
+            | sw <- dismissal
+            ]
+        !unlockCmd
+          | not dismiss = Just Unlock
+          | otherwise = Nothing
+        !next =
           if
-            | near && prev `elem` [Vacant, ReadyForUnlock] -> (Just Unlock, Occupied)
+            | near && prev `elem` [Vacant, ReadyForUnlock] -> (unlockCmd, Occupied)
             | occupied ->
                 case prev of
                   (Vacant; ReadyForUnlock)
                     | not near -> (Nothing, ReadyForUnlock)
-                    | otherwise -> (Just Unlock, Occupied)
+                    | otherwise -> (unlockCmd, Occupied)
                   _ -> (Nothing, Occupied)
             | duration >= thresh.seconds -> (Nothing, Vacant)
             | otherwise -> (Nothing, Waiting)
@@ -148,7 +158,7 @@ unlockEventS ::
   ( Reader UnlockConfig :> es
   , Time cl ~ UTCTime
   ) =>
-  ClSF (Eff es) cl ESPresenseSnapshot (Maybe UnlockEvent)
+  ClSF (Eff es) cl (MqttSnapshot, ESPresenseSnapshot) (Maybe UnlockEvent)
 unlockEventS = proc snapshot -> do
   (_, event) <- unlockFeedbackS -< snapshot
   returnA -< event

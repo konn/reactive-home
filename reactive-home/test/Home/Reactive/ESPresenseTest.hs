@@ -39,8 +39,10 @@ import Home.Reactive.ESPresense (
   minutes,
   seconds,
  )
+import Home.Reactive.MQTT (MqttSnapshot (..))
 import Home.Reactive.Unlock (
   ApproachCondition (..),
+  DismissCondition (..),
   UnlockConfig (..),
   UnlockEvent (..),
   UnlockFeedback (..),
@@ -359,6 +361,24 @@ test_unlockHeartbeat =
               , TestSnapshot approachTime (exampleOccupiedSnapshot approachTime 4.5)
               ]
         runUnlockInputs exampleUnlockConfig snapshots @?= [Nothing, Nothing, Just Unlock]
+    , testCase "present dismissal switch suppresses unlock" $ do
+        let readyTime = addUTCTime (3 * 60 + 1) baseTime
+            approachTime = addUTCTime (3 * 60 + 2) baseTime
+            snapshots =
+              [ TestUnlockSnapshot baseTime emptyMqttSnapshot vacantSnapshot
+              , TestUnlockSnapshot readyTime emptyMqttSnapshot vacantSnapshot
+              , TestUnlockSnapshot approachTime dismissedMqttSnapshot (exampleOccupiedSnapshot approachTime 4.5)
+              ]
+        runUnlockInputsWithMqtt dismissUnlockConfig snapshots @?= [Nothing, Nothing, Nothing]
+    , testCase "absent dismissal switch allows unlock" $ do
+        let readyTime = addUTCTime (3 * 60 + 1) baseTime
+            approachTime = addUTCTime (3 * 60 + 2) baseTime
+            snapshots =
+              [ TestUnlockSnapshot baseTime emptyMqttSnapshot vacantSnapshot
+              , TestUnlockSnapshot readyTime emptyMqttSnapshot vacantSnapshot
+              , TestUnlockSnapshot approachTime emptyMqttSnapshot (exampleOccupiedSnapshot approachTime 4.5)
+              ]
+        runUnlockInputsWithMqtt dismissUnlockConfig snapshots @?= [Nothing, Nothing, Just Unlock]
     ]
 
 data TestInput = TestInput
@@ -369,6 +389,12 @@ data TestInput = TestInput
 data TestSnapshot = TestSnapshot
   { at :: !UTCTime
   , snapshot :: !ESPresenseSnapshot
+  }
+
+data TestUnlockSnapshot = TestUnlockSnapshot
+  { unlockAt :: !UTCTime
+  , unlockMqtt :: !MqttSnapshot
+  , unlockSnapshot :: !ESPresenseSnapshot
   }
 
 type SnapshotS =
@@ -389,14 +415,14 @@ type UnlockS =
   ClSF
     (Eff '[Reader UnlockConfig])
     TestClock
-    ESPresenseSnapshot
+    (MqttSnapshot, ESPresenseSnapshot)
     (Maybe UnlockEvent)
 
 type UnlockFeedbackS =
   ClSF
     (Eff '[Reader UnlockConfig])
     TestClock
-    ESPresenseSnapshot
+    (MqttSnapshot, ESPresenseSnapshot)
     (UnlockFeedback, Maybe UnlockEvent)
 
 runSnapshotInputs :: ESPresenseConfig -> [TestInput] -> [ESPresenseSnapshot]
@@ -435,20 +461,28 @@ runDeltaInputs cfg inputs =
 
 runUnlockInputs :: UnlockConfig -> [TestSnapshot] -> [Maybe UnlockEvent]
 runUnlockInputs cfg inputs =
+  runUnlockInputsWithMqtt
+    cfg
+    [ TestUnlockSnapshot at emptyMqttSnapshot snapshot
+    | TestSnapshot {..} <- inputs
+    ]
+
+runUnlockInputsWithMqtt :: UnlockConfig -> [TestUnlockSnapshot] -> [Maybe UnlockEvent]
+runUnlockInputsWithMqtt cfg inputs =
   runPureEff $ runReader cfg $ go unlockEventS Nothing inputs
   where
-    go :: UnlockS -> Maybe UTCTime -> [TestSnapshot] -> Eff '[Reader UnlockConfig] [Maybe UnlockEvent]
+    go :: UnlockS -> Maybe UTCTime -> [TestUnlockSnapshot] -> Eff '[Reader UnlockConfig] [Maybe UnlockEvent]
     go _ _ [] = pure []
-    go signal previous (TestSnapshot {..} : rest) = do
+    go signal previous (TestUnlockSnapshot {..} : rest) = do
       let timeInfo =
             TimeInfo
-              { sinceLast = maybe 0 (realToFrac . (at `diffUTCTime`)) previous
-              , sinceInit = realToFrac $ at `diffUTCTime` baseTime
-              , absolute = at
+              { sinceLast = maybe 0 (realToFrac . (unlockAt `diffUTCTime`)) previous
+              , sinceInit = realToFrac $ unlockAt `diffUTCTime` baseTime
+              , absolute = unlockAt
               , tag = ()
               }
-      Result signal' event <- runReaderT (stepAutomaton signal snapshot) timeInfo
-      (event :) <$> go signal' (Just at) rest
+      Result signal' event <- runReaderT (stepAutomaton signal (unlockMqtt, unlockSnapshot)) timeInfo
+      (event :) <$> go signal' (Just unlockAt) rest
 
 runUnlockFeedbackInputs :: UnlockConfig -> [TestSnapshot] -> [(UnlockFeedback, Maybe UnlockEvent)]
 runUnlockFeedbackInputs cfg inputs =
@@ -464,8 +498,14 @@ runUnlockFeedbackInputs cfg inputs =
               , absolute = at
               , tag = ()
               }
-      Result signal' event <- runReaderT (stepAutomaton signal snapshot) timeInfo
+      Result signal' event <- runReaderT (stepAutomaton signal (emptyMqttSnapshot, snapshot)) timeInfo
       (event :) <$> go signal' (Just at) rest
+
+emptyMqttSnapshot :: MqttSnapshot
+emptyMqttSnapshot = MqttSnapshot {switches = HM.empty}
+
+dismissedMqttSnapshot :: MqttSnapshot
+dismissedMqttSnapshot = MqttSnapshot {switches = HM.fromList [("do-not-disturb", True)]}
 
 sensorDeviceCount :: ESPSensorName -> ESPresenseSnapshot -> Int
 sensorDeviceCount sensor snapshot =
@@ -563,6 +603,7 @@ unlockConfig =
             , distance = 2
             }
         ]
+    , dismiss = []
     }
 
 exampleUnlockConfig :: UnlockConfig
@@ -576,6 +617,17 @@ exampleUnlockConfig =
             { sensor = "entrance"
             , device = "watch:"
             , distance = 5.0
+            }
+        ]
+    , dismiss = []
+    }
+
+dismissUnlockConfig :: UnlockConfig
+dismissUnlockConfig =
+  exampleUnlockConfig
+    { dismiss =
+        [ DismissCondition
+            { switch = "do-not-disturb"
             }
         ]
     }

@@ -1,9 +1,12 @@
+{-# LANGUAGE Arrows #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedLabels #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE NoFieldSelectors #-}
 
@@ -29,14 +32,20 @@ module Home.Reactive.MQTT (
   wildMany,
   fromTopic,
   Message (..),
+  switchStateS,
+  mqttSnapshotS,
+  MqttSnapshot (..),
 ) where
 
 import Control.Exception (Exception, throwIO)
 import Control.Lens ((&), (.~))
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Generics.Labels ()
+import Data.HashMap.Strict (HashMap)
+import Data.HashMap.Strict qualified as HM
 import Data.List.NonEmpty (NonEmpty)
 import Data.List.NonEmpty qualified as NE
+import Data.Maybe (fromMaybe)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (getCurrentTime)
@@ -44,8 +53,10 @@ import Effectful (Eff, (:>))
 import Effectful.Dispatch.Static (unsafeEff_)
 import Effectful.Network.Mqtt (Mqtt)
 import Effectful.Network.Mqtt qualified as EffM
+import Effectful.Reader.Static (Reader)
 import FRP.Rhine
 import GHC.Generics (Generic)
+import Home.Reactive.Utils (catMaybesS, effReaderS)
 import Network.Mqtt.Client.AutoReconnect
 import Toml qualified
 
@@ -65,6 +76,37 @@ data MqttSwitch = MqttSwitch
   }
   deriving (Show, Eq, Ord, Generic, FromJSON, ToJSON)
   deriving (Toml.HasCodec, Toml.HasItemCodec) via Toml.TomlTable MqttSwitch
+
+data MqttSnapshot = MqttSnapshot {switches :: HashMap T.Text Bool}
+  deriving (Show, Eq, Ord, Generic)
+
+mqttSnapshotS ::
+  (Reader MqttDevices :> es) =>
+  ClSF (Eff es) cl Message MqttSnapshot
+mqttSnapshotS = effReaderS @MqttDevices proc (msg, devices) -> do
+  switches <-
+    parallely
+      (proc (msg, sw) -> switchStateS -< (sw, msg))
+      -<
+        HM.fromList [(sw.name, (msg, sw)) | sw <- devices.switches]
+  returnA -< MqttSnapshot {..}
+
+switchStateS ::
+  ClSF (Eff es) cl (MqttSwitch, Message) Bool
+switchStateS =
+  catMaybesS False <-< proc (switch, msg) -> do
+    let payload = TE.decodeUtf8 msg.payload
+        onValue = fromMaybe "true" switch.onValue
+        offValue = fromMaybe "false" switch.offValue
+    returnA
+      -<
+        if msg.topic == switch.topic
+          then
+            if
+              | payload == onValue -> Just True
+              | payload == offValue -> Just False
+              | otherwise -> Nothing
+          else Nothing
 
 mqttTopicFilters :: MqttDevices -> [TopicFilter]
 mqttTopicFilters MqttDevices {..} = map (fromTopic . (.topic)) switches

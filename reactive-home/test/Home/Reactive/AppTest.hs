@@ -38,6 +38,12 @@ test_configParsing =
     , testCase "MQTT switch table arrays parse as devices" $
         foldMap mqttTopicFilters . (.mqtt) <$> decodeExact (genericCodec @Config) mqttSwitchToml
           @?= Right ["switch/do-not-disturb/state"]
+    , testCase "dismissal switch config subscribes to matching MQTT switch" $
+        (foldMap mqttTopicFilters . (.mqtt) <$> decodeExact (genericCodec @Config) dismissSwitchToml)
+          @?= Right ["switch/do-not-disturb/state"]
+    , testCase "dismissal switch config without MQTT switch has no switch subscription" $
+        (foldMap mqttTopicFilters . (.mqtt) <$> decodeExact (genericCodec @Config) dismissWithoutMqttSwitchToml)
+          @?= Right []
     ]
 
 withoutClientIdToml :: T.Text
@@ -66,4 +72,50 @@ mqttSwitchToml =
   [[mqtt.switches]]
   name = "do-not-disturb"
   topic = "switch/do-not-disturb/state"
+  """
+
+dismissSwitchToml :: T.Text
+dismissSwitchToml =
+  """
+  host = "localhost"
+  port = 1883
+
+  [unlock]
+  room = "home"
+  delay = "3m"
+  locks = []
+
+  [[unlock.approach]]
+  sensor = "entrance"
+  device = "watch:"
+  distance = 5.0
+
+  [[unlock.dismiss]]
+  switch = "do-not-disturb"
+
+  [mqtt]
+
+  [[mqtt.switches]]
+  name = "do-not-disturb"
+  topic = "switch/do-not-disturb/state"
+  """
+
+dismissWithoutMqttSwitchToml :: T.Text
+dismissWithoutMqttSwitchToml =
+  """
+  host = "localhost"
+  port = 1883
+
+  [unlock]
+  room = "home"
+  delay = "3m"
+  locks = []
+
+  [[unlock.approach]]
+  sensor = "entrance"
+  device = "watch:"
+  distance = 5.0
+
+  [[unlock.dismiss]]
+  switch = "do-not-disturb"
   """
