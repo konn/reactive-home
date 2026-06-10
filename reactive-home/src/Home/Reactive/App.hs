@@ -337,6 +337,7 @@ reportMackerelMetrics = do
   case cfg of
     Nothing -> pure ()
     Just MackerelConfig {..} -> M.forever do
+      threadDelay 1_500_000 -- 1.5 seconds
       let url = "https://api.mackerelio.com/api/v0/services/" <> T.unpack service <> "/tsdb"
           opts =
             W.defaults
