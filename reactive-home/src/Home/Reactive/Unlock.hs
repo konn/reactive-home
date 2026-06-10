@@ -147,7 +147,7 @@ unlockFeedbackS =
                     | not near -> (Nothing, ReadyForUnlock)
                     | otherwise -> (unlockCmd, Occupied)
                   _ -> (Nothing, Occupied)
-            | duration >= thresh.seconds -> (Nothing, Vacant)
+            | duration >= thresh.seconds, not dismiss -> (Nothing, Vacant)
             | otherwise -> (Nothing, Waiting)
         !(event, status) = next
         !fb = UnlockFeedback {near, occupied, duration, status}
