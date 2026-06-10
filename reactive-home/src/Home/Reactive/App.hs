@@ -197,7 +197,7 @@ withESPConfig action = do
 
 type MackerelClock es = IOClock (Eff es) (Millisecond 1500)
 
-type ESPHeartbeatClock es = IOClock (Eff es) (Millisecond 100)
+type ESPHeartbeatClock es = IOClock (Eff es) (Millisecond 500)
 
 type AppClock es = SeqClock EffMqttClock (ParClock (ESPHeartbeatClock es) (MackerelClock es))
 
