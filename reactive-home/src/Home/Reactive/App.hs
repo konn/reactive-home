@@ -336,7 +336,7 @@ mainLoop =
     --> ( processESPHeartbeat
             @@ ioClock waitClock
             |@| bulkMackerelS
-            @@ ioClock waitClock
+              @@ ioClock waitClock
         )
 
 display :: (Reader HomeEnv :> es, Console :> es, Show a) => LogLevel -> a -> Eff es ()
