@@ -224,14 +224,14 @@ appBuffer ::
 appBuffer =
   arr (\MqttOutputs {..} -> (mqttESPStatus, mqttSnapshot))
     ^->> dropNothingBuffer fifoUnbounded
-    *-* keepLast emptyMqttSnapshot
-    >>-^ arr
-      ( \(esp, mqttSnapshot) ->
-          AppTick
-            { tickESP = maybe Heartbeat Event esp
-            , tickMqttSnapshot = mqttSnapshot
-            }
-      )
+      *-* keepLast emptyMqttSnapshot
+      >>-^ arr
+        ( \(esp, mqttSnapshot) ->
+            AppTick
+              { tickESP = maybe Heartbeat Event esp
+              , tickMqttSnapshot = mqttSnapshot
+              }
+        )
 
 dropNothingBuffer ::
   (Monad m) =>
