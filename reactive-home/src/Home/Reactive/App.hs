@@ -347,15 +347,15 @@ reportMackerelMetrics = do
       if null metrics
         then pure ()
         else
-          100 & fix \self !n -> do
+          500 & fix \self !n -> do
             eith <- E.tryAny $ W.postWith opts url $ A.encode metrics
             case eith of
               Left exc -> do
                 display Error $ "Failed to report metrics to Mackerel: " <> T.pack (show exc)
-                wait <- unsafeEff_ $ randomRIO (100, n)
+                wait <- unsafeEff_ $ randomRIO (500, n)
                 display Error $ "Retrying in " <> T.pack (show wait) <> " msecs..."
                 threadDelay $ wait * 1000
-                self (min 1_600 $ n * 2)
+                self (min 6_400 $ n * 2)
               Right {} -> do
                 display Info $ "Successfully reported " <> T.pack (show (length metrics)) <> " metrics to Mackerel."
                 pure ()
