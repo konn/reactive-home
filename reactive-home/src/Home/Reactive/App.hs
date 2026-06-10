@@ -163,7 +163,7 @@ processMqtt ::
   ClSF (Eff es) EffMqttClock () MqttOutputs
 processMqtt = proc () -> do
   msg <- tagS -< ()
-  arrMCl (display Debug) -< msg
+  arrMCl (display Debug . T.show) -< msg
   ssm <- arr toMetrics <-< processSesame -< msg
   esp <- processESP -< msg
   devices <- constMCl (asks @HomeEnv (.mqttDevices)) -< ()
@@ -276,18 +276,18 @@ processESPHeartbeat = proc tick -> do
     Nothing -> returnA -< ()
     Just _ -> do
       mdelta <- hoistClSF withESPConfig espresenseDeltaS -< tick.tickESP
-      void $ mapMaybe (arrMCl $ display Debug) -< mdelta
+      void $ mapMaybe (arrMCl $ display Debug . T.show) -< mdelta
       snapshot <- hoistClSF withESPConfig aggregateESPresenseDeltaS -< mdelta
-      void $ arrMCl (display Debug . ("Mqtt Snapshot: " <>) . show) -< tick.tickMqttSnapshot
-      void $ mapMaybe (arrMCl $ display Debug) -< snapshot <$ mdelta
+      void $ arrMCl (display Debug . ("Mqtt Snapshot: " <>) . T.show) -< tick.tickMqttSnapshot
+      void $ mapMaybe (arrMCl $ display Debug . T.show) -< snapshot <$ mdelta
       cfg <- constMCl (asks @HomeEnv (.unlock)) -< ()
       case cfg of
         Nothing -> returnA -< ()
         Just {} -> do
           -- FIXME: too dirty!
           (fb, result) <- hoistClSF withUnlockConfig unlockFeedbackS -< (tick.tickMqttSnapshot, snapshot)
-          arrMCl (display Debug . ("ESP feedback: " <>) . show) -< fb
-          void $ mapMaybe (arrMCl $ display Debug . ("ESPUnlock: " <>) . show) -< result
+          arrMCl (display Debug . ("ESP feedback: " <>) . T.show) -< fb
+          void $ mapMaybe (arrMCl $ display Debug . ("ESPUnlock: " <>) . T.show) -< result
           void $ mapMaybe (hoistClSF withSesameConfig $ hoistClSF withUnlockConfig $ arrMCl handleUnlockEvent) -< result
 
 withSesameConfig ::
@@ -340,14 +340,14 @@ mainLoop =
               @@ ioClock waitClock
         )
 
-display :: (Reader HomeEnv :> es, Console :> es, Show a) => LogLevel -> a -> Eff es ()
+display :: (Reader HomeEnv :> es, Console :> es) => LogLevel -> T.Text -> Eff es ()
 display level a = do
   minLevel <- asks @HomeEnv (.logLevel)
   if level >= minLevel
     then do
       now <- unsafeEff_ getZonedTime
       let timestamp = formatTime defaultTimeLocale "[%Y-%m-%d %H:%M:%S %Z] " now
-      Console.putStrLn . TE.encodeUtf8 . T.pack . (timestamp <>) . show $ a
+      Console.putStrLn . TE.encodeUtf8 . (T.pack timestamp <>) $ a
     else pure ()
 
 application ::
