@@ -24,10 +24,12 @@ module Home.Reactive.MQTT (
   wildMany,
   fromTopic,
   Message (..),
+  subscribedTopics,
 ) where
 
 import Control.Exception (Exception, throwIO)
 import Control.Lens ((&), (.~))
+import Data.Aeson (FromJSON, ToJSON)
 import Data.Generics.Labels ()
 import Data.List.NonEmpty (NonEmpty)
 import Data.List.NonEmpty qualified as NE
@@ -41,10 +43,34 @@ import Effectful.Network.Mqtt qualified as EffM
 import FRP.Rhine
 import GHC.Generics (Generic)
 import Network.Mqtt.Client.AutoReconnect
+import Toml qualified
 
 newtype MqttClock = MqttClock AutoClient
   deriving stock (Generic)
   deriving anyclass (GetClockProxy)
+
+data MqttDevices = MqttDevices {switches :: ![MqttSwitch]}
+  deriving (Show, Eq, Ord, Generic, FromJSON, ToJSON)
+
+instance Toml.HasCodec MqttDevices where
+  hasCodec = Toml.table Toml.genericCodec
+
+data MqttSwitch = MqttSwitch
+  { name :: {-# UNPACK #-} !T.Text
+  , topic :: {-# UNPACK #-} !Topic
+  , onValue :: !(Maybe T.Text)
+  , offValue :: !(Maybe T.Text)
+  }
+  deriving (Show, Eq, Ord, Generic, FromJSON, ToJSON)
+
+subscribedTopics :: MqttDevices -> [Topic]
+subscribedTopics MqttDevices {..} = map (.topic) switches
+
+instance Toml.HasCodec MqttSwitch where
+  hasCodec = Toml.table Toml.genericCodec
+
+instance Toml.HasItemCodec MqttSwitch where
+  hasItemCodec = Right Toml.genericCodec
 
 newMqttClock :: MqttClient -> MqttClock
 {-# INLINE newMqttClock #-}
