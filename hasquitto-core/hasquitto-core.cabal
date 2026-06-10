@@ -81,6 +81,7 @@ library
     Network.Mqtt.Connection.Internal
 
   build-depends:
+    aeson,
     async,
     bytestring,
     containers,
@@ -91,6 +92,7 @@ library
     stm-containers,
     text,
     time,
+    tomland,
 
 test-suite hasquitto-core-test
   import: defaults

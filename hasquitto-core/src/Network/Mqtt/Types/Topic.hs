@@ -19,10 +19,12 @@ module Network.Mqtt.Types.Topic (
   stripPrefix,
 ) where
 
+import Data.Aeson (FromJSON, FromJSONKey, ToJSON, ToJSONKey)
 import Data.String (IsString)
 import Data.Text (Text)
 import Data.Text qualified as T
 import GHC.Generics (Generic)
+import Toml qualified
 
 {- | A topic /name/, used when publishing. A valid topic name is non-empty,
 contains no NUL character, contains no wildcard characters (@+@, @#@), and is at
@@ -30,7 +32,15 @@ most 65535 UTF-8 bytes. Construct with 'mkTopic'.
 -}
 newtype Topic = Topic {raw :: Text}
   deriving stock (Show, Eq, Ord, Generic)
-  deriving newtype (IsString)
+  deriving newtype
+    ( IsString
+    , FromJSON
+    , ToJSON
+    , FromJSONKey
+    , ToJSONKey
+    , Toml.HasCodec
+    , Toml.HasItemCodec
+    )
 
 stripPrefix :: Text -> Topic -> Maybe Topic
 stripPrefix p (Topic t) = Topic <$> T.stripPrefix (p <> "/") t
