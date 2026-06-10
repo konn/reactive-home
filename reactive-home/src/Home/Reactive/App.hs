@@ -31,21 +31,19 @@ import Data.Generics.Labels ()
 import Data.HashMap.Strict qualified as HM
 import Data.List.NonEmpty qualified as NE
 import Data.Maybe (fromMaybe)
-import Data.Sequence (Seq)
-import Data.Sequence qualified as Seq
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (defaultTimeLocale, getZonedTime)
 import Data.Time.Format (formatTime)
 import Effectful
 import Effectful.Concurrent (Concurrent, runConcurrent)
+import Effectful.Concurrent.STM (TQueue, atomically, newTQueueIO, writeTQueue)
 import Effectful.Console.ByteString (Console, runConsole)
 import Effectful.Console.ByteString qualified as Console
 import Effectful.Console.ByteString qualified as Eff
 import Effectful.Dispatch.Static (unsafeEff_)
 import Effectful.Network.Mqtt
 import Effectful.Reader.Static (Reader, asks, runReader)
-import Effectful.Wreq (Wreq, runWreq)
 import FRP.Rhine
 import GHC.Generics (Generic)
 import Home.Reactive.App.Types (ParseResult (..))
@@ -108,6 +106,7 @@ data HomeEnv = HomeEnv
   , sesame :: {-# UNPACK #-} !(Maybe SesameEnv)
   , espresense :: !(Maybe ESPresenseConfig)
   , mackerel :: !(Maybe MackerelConfig)
+  , mackerelMetricsQueue :: !(TQueue [MackerelMetrics])
   , unlock :: !(Maybe UnlockConfig)
   , logLevel :: !LogLevel
   }
@@ -144,14 +143,12 @@ processESP = proc msg -> do
 data MqttOutputs = MqttOutputs
   { mqttESPStatus :: !(Maybe ESPStatus)
   , mqttSnapshot :: !MqttSnapshot
-  , mqttMackerelMetrics :: ![MackerelMetrics]
   }
   deriving (Show, Eq, Ord, Generic)
 
 data AppTick = AppTick
   { tickESP :: !(Heartbeated ESPStatus)
   , tickMqttSnapshot :: !MqttSnapshot
-  , tickMackerelMetrics :: ![MackerelMetrics]
   }
   deriving (Show, Eq, Ord, Generic)
 
@@ -159,13 +156,14 @@ emptyMqttSnapshot :: MqttSnapshot
 emptyMqttSnapshot = MqttSnapshot {switches = HM.empty}
 
 processMqtt ::
-  (Reader HomeEnv :> es, Console :> es) =>
+  (Reader HomeEnv :> es, Console :> es, Concurrent :> es) =>
   ClSF (Eff es) EffMqttClock () MqttOutputs
 processMqtt = proc () -> do
   msg <- tagS -< ()
   arrMCl (display Debug . T.show) -< msg
   ssm <- arr toMetrics <-< processSesame -< msg
   esp <- processESP -< msg
+  arrMCl enqueueMackerelMetrics -< ssm <> toMetrics esp
   devices <- constMCl (asks @HomeEnv (.mqttDevices)) -< ()
   mqttSnapshot <- case devices of
     Nothing -> returnA -< emptyMqttSnapshot
@@ -175,8 +173,15 @@ processMqtt = proc () -> do
       MqttOutputs
         { mqttESPStatus = esp
         , mqttSnapshot
-        , mqttMackerelMetrics = ssm <> toMetrics esp
         }
+
+enqueueMackerelMetrics :: (Reader HomeEnv :> es, Concurrent :> es) => [MackerelMetrics] -> Eff es ()
+enqueueMackerelMetrics [] = pure ()
+enqueueMackerelMetrics metrics = do
+  mcfg <- asks @HomeEnv (.mackerel)
+  forM_ mcfg $ \_ -> do
+    queue <- asks @HomeEnv (.mackerelMetricsQueue)
+    atomically $ writeTQueue queue metrics
 
 withMqttDevices ::
   (Reader HomeEnv :> es) =>
@@ -196,72 +201,41 @@ withESPConfig action = do
     Nothing -> error "ESPConfig not found in environment"
     Just espCfg -> runReader espCfg action
 
-type MackerelClock es = IOClock (Eff es) (Millisecond 1500)
-
 type ESPHeartbeatClock es = IOClock (Eff es) (Millisecond 500)
 
-type AppClock es = SeqClock EffMqttClock (ParClock (ESPHeartbeatClock es) (MackerelClock es))
-
-data AppBufferState = AppBufferState
-  { bufferedESP :: !(Seq ESPStatus)
-  , latestMqttSnapshot :: !MqttSnapshot
-  , bufferedMackerel :: ![MackerelMetrics]
-  }
-  deriving (Show, Eq, Ord, Generic)
+type AppClock es = SeqClock EffMqttClock (ESPHeartbeatClock es)
 
 appBuffer ::
   ResamplingBuffer
     (Eff es)
     EffMqttClock
-    (ParClock (ESPHeartbeatClock es) (MackerelClock es))
+    (ESPHeartbeatClock es)
     MqttOutputs
     AppTick
 appBuffer =
-  ResamplingBuffer
-    { buffer =
-        AppBufferState
-          { bufferedESP = Seq.empty
-          , latestMqttSnapshot = emptyMqttSnapshot
-          , bufferedMackerel = []
-          }
-    , put = \_ MqttOutputs {..} state ->
-        pure
-          state
-            { bufferedESP = maybe state.bufferedESP (state.bufferedESP Seq.|>) mqttESPStatus
-            , latestMqttSnapshot = mqttSnapshot
-            , bufferedMackerel = state.bufferedMackerel <> mqttMackerelMetrics
+  arr (\MqttOutputs {..} -> (mqttESPStatus, mqttSnapshot))
+    ^->> dropNothingBuffer fifoUnbounded
+    *-* keepLast emptyMqttSnapshot
+    >>-^ arr
+      ( \(esp, mqttSnapshot) ->
+          AppTick
+            { tickESP = maybe Heartbeat Event esp
+            , tickMqttSnapshot = mqttSnapshot
             }
-    , get = \TimeInfo {tag} state ->
-        case tag of
-          Left _ ->
-            case Seq.viewl state.bufferedESP of
-              espStatus Seq.:< rest ->
-                pure $
-                  Result
-                    state {bufferedESP = rest}
-                    AppTick
-                      { tickESP = Event espStatus
-                      , tickMqttSnapshot = state.latestMqttSnapshot
-                      , tickMackerelMetrics = []
-                      }
-              Seq.EmptyL ->
-                pure $
-                  Result
-                    state
-                    AppTick
-                      { tickESP = Heartbeat
-                      , tickMqttSnapshot = state.latestMqttSnapshot
-                      , tickMackerelMetrics = []
-                      }
-          Right _ ->
-            pure $
-              Result
-                state {bufferedMackerel = []}
-                AppTick
-                  { tickESP = Heartbeat
-                  , tickMqttSnapshot = state.latestMqttSnapshot
-                  , tickMackerelMetrics = state.bufferedMackerel
-                  }
+      )
+
+dropNothingBuffer ::
+  (Monad m) =>
+  ResamplingBuffer m clIn clOut a b ->
+  ResamplingBuffer m clIn clOut (Maybe a) b
+dropNothingBuffer ResamplingBuffer {..} =
+  ResamplingBuffer
+    { put = \inputTime value state ->
+        case value of
+          Nothing -> pure state
+          Just a -> put inputTime a state
+    , get
+    , buffer
     }
 
 processESPHeartbeat ::
@@ -308,37 +282,16 @@ withUnlockConfig action = do
     Nothing -> error "UnlockConfig not found in environment"
     Just unlockCfg -> runReader unlockCfg action
 
-bulkMackerelS ::
-  ( Wreq :> es
-  , Reader HomeEnv :> es
-  , Concurrent :> es
-  , Console :> es
-  ) =>
-  ClSF (Eff es) (MackerelClock es) AppTick ()
-bulkMackerelS = proc stts -> do
-  mcfg <- constMCl (asks @HomeEnv (.mackerel)) -< ()
-  case mcfg of
-    Nothing -> returnA -< ()
-    Just cfg -> arrMCl (uncurry postMackerel) -< (cfg, stts.tickMackerelMetrics)
-
 mainLoop ::
   ( Reader HomeEnv :> es
   , Mqtt :> es
   , Console :> es
-  , Wreq :> es
   , Concurrent :> es
   , IOE :> es
   ) =>
   Rhine (Eff es) (AppClock es) () ()
 mainLoop =
-  processMqtt
-    @@ EffMqttClock
-    >-- appBuffer
-    --> ( processESPHeartbeat
-            @@ ioClock waitClock
-            |@| bulkMackerelS
-              @@ ioClock waitClock
-        )
+  processMqtt @@ EffMqttClock >-- appBuffer --> processESPHeartbeat @@ ioClock waitClock
 
 display :: (Reader HomeEnv :> es, Console :> es) => LogLevel -> T.Text -> Eff es ()
 display level a = do
@@ -354,7 +307,6 @@ application ::
   ( Concurrent :> es
   , Reader HomeEnv :> es
   , Console :> es
-  , Wreq :> es
   , IOE :> es
   , Mqtt :> es
   ) =>
@@ -404,10 +356,10 @@ defaultMainWith config = do
       handleAny report $ withMqttClient mqttCfg \mqtt sess ->
         runEff $
           runConsole $
-            runWreq $
+            runConcurrent $ do
+              mackerelMetricsQueue <- newTQueueIO
               runReader HomeEnv {..} $
-                runMqttWith mqtt sess $
-                  runConcurrent application
+                runMqttWith mqtt sess application
 
 report :: SomeException -> IO ()
 report exc = do

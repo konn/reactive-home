@@ -95,12 +95,16 @@ postMackerel ::
   ) =>
   MackerelConfig -> s -> Eff es ()
 postMackerel MackerelConfig {..} s = do
-  let url = "https://api.mackerelio.com/api/v0/services/" <> T.unpack service <> "/tsdb"
-      opts =
-        W.defaults
-          & W.header "X-Api-Key" .~ [TE.encodeUtf8 apiKey]
-          & W.header "Content-Type" .~ ["application/json"]
-  void $ forkIO $ tryAnyReport $ postWith opts url $ A.encode $ toMetrics s
+  let metrics = toMetrics s
+  case metrics of
+    [] -> pure ()
+    _ -> do
+      let url = "https://api.mackerelio.com/api/v0/services/" <> T.unpack service <> "/tsdb"
+          opts =
+            W.defaults
+              & W.header "X-Api-Key" .~ [TE.encodeUtf8 apiKey]
+              & W.header "Content-Type" .~ ["application/json"]
+      void $ forkIO $ tryAnyReport $ postWith opts url $ A.encode metrics
 
 tryAnyReport :: (Console :> es) => Eff es a -> Eff es ()
 tryAnyReport act = do
