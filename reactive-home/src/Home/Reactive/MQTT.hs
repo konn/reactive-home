@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedLabels #-}
 {-# LANGUAGE OverloadedRecordDot #-}
@@ -17,6 +18,10 @@ module Home.Reactive.MQTT (
   EffMqttClock (..),
   MqttClockError (..),
 
+  -- * subscriptions
+  mqttTopicFilters,
+  MqttDevices (..),
+
   -- * Re-exports
   Topic (..),
   TopicFilter (..),
@@ -24,7 +29,6 @@ module Home.Reactive.MQTT (
   wildMany,
   fromTopic,
   Message (..),
-  subscribedTopics,
 ) where
 
 import Control.Exception (Exception, throwIO)
@@ -51,9 +55,7 @@ newtype MqttClock = MqttClock AutoClient
 
 data MqttDevices = MqttDevices {switches :: ![MqttSwitch]}
   deriving (Show, Eq, Ord, Generic, FromJSON, ToJSON)
-
-instance Toml.HasCodec MqttDevices where
-  hasCodec = Toml.table Toml.genericCodec
+  deriving (Toml.HasCodec, Toml.HasItemCodec) via Toml.TomlTable MqttDevices
 
 data MqttSwitch = MqttSwitch
   { name :: {-# UNPACK #-} !T.Text
@@ -62,15 +64,10 @@ data MqttSwitch = MqttSwitch
   , offValue :: !(Maybe T.Text)
   }
   deriving (Show, Eq, Ord, Generic, FromJSON, ToJSON)
+  deriving (Toml.HasCodec, Toml.HasItemCodec) via Toml.TomlTable MqttSwitch
 
-subscribedTopics :: MqttDevices -> [Topic]
-subscribedTopics MqttDevices {..} = map (.topic) switches
-
-instance Toml.HasCodec MqttSwitch where
-  hasCodec = Toml.table Toml.genericCodec
-
-instance Toml.HasItemCodec MqttSwitch where
-  hasItemCodec = Right Toml.genericCodec
+mqttTopicFilters :: MqttDevices -> [TopicFilter]
+mqttTopicFilters MqttDevices {..} = map (fromTopic . (.topic)) switches
 
 newMqttClock :: MqttClient -> MqttClock
 {-# INLINE newMqttClock #-}

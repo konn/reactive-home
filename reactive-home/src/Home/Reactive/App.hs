@@ -67,6 +67,7 @@ data Config = Config
   , mackerel :: !(Maybe MackerelConfig)
   , unlock :: !(Maybe UnlockConfig)
   , logLevel :: !(Maybe LogLevel)
+  , mqtt :: !(Maybe MqttDevices)
   }
   deriving (Show, Eq, Ord, Generic)
   deriving (HasCodec) via TomlTable Config
@@ -307,7 +308,7 @@ mainLoop =
     --> ( processESPHeartbeat
             @@ ioClock waitClock
             |@| bulkMackerelS
-              @@ ioClock waitClock
+            @@ ioClock waitClock
         )
 
 display :: (Reader HomeEnv :> es, Console :> es, Show a) => LogLevel -> a -> Eff es ()
@@ -344,6 +345,7 @@ defaultMainWith config = do
   let !topics =
         foldMap espresenseTopicFilters config.espresense
           <> foldMap sesameTopicFilters config.sesame
+          <> foldMap mqttTopicFilters config.mqtt
   case NE.nonEmpty topics of
     Nothing -> putStrLn "No topics to subscribe to; exiting."
     Just ts -> do
