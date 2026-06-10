@@ -195,7 +195,7 @@ withESPConfig action = do
     Nothing -> error "ESPConfig not found in environment"
     Just espCfg -> runReader espCfg action
 
-type MackerelClock es = IOClock (Eff es) (Millisecond 1200)
+type MackerelClock es = IOClock (Eff es) (Millisecond 1500)
 
 type ESPHeartbeatClock es = IOClock (Eff es) (Millisecond 100)
 
@@ -336,7 +336,7 @@ mainLoop =
     --> ( processESPHeartbeat
             @@ ioClock waitClock
             |@| bulkMackerelS
-              @@ ioClock waitClock
+            @@ ioClock waitClock
         )
 
 display :: (Reader HomeEnv :> es, Console :> es, Show a) => LogLevel -> a -> Eff es ()
