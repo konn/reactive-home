@@ -23,6 +23,7 @@ module Home.Reactive.App (
 
 import Control.Applicative ((<**>))
 import Control.Exception (throwIO)
+import Control.Exception.Safe (SomeException, handleAny)
 import Control.Monad (forM_)
 import Control.Monad.Trans.Class (lift)
 import Data.Functor (void, (<&>))
@@ -400,13 +401,18 @@ defaultMainWith config = do
           unlock = config.unlock
           mqttDevices = config.mqtt
           logLevel = fromMaybe Info config.logLevel
-      withMqttClient mqttCfg \mqtt sess ->
+      handleAny report $ withMqttClient mqttCfg \mqtt sess ->
         runEff $
           runConsole $
             runWreq $
               runReader HomeEnv {..} $
                 runMqttWith mqtt sess $
                   runConcurrent application
+
+report :: SomeException -> IO ()
+report exc = do
+  now <- getZonedTime
+  putStrLn $ "[" ++ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S %Z" now ++ "] ERR: An error occurred: " ++ show exc
 
 defaultMain :: IO ()
 defaultMain = do
