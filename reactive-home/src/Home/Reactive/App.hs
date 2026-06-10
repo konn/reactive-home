@@ -24,8 +24,13 @@ module Home.Reactive.App (
 import Control.Applicative ((<**>))
 import Control.Exception (throwIO)
 import Control.Exception.Safe (SomeException, handleAny)
+import Control.Exception.Safe qualified as E
+import Control.Lens ((&), (.~))
 import Control.Monad (forM_)
+import Control.Monad qualified as M
+import Control.Monad.Fix (fix)
 import Control.Monad.Trans.Class (lift)
+import Data.Aeson qualified as A
 import Data.Functor (void, (<&>))
 import Data.Generics.Labels ()
 import Data.HashMap.Strict qualified as HM
@@ -36,14 +41,17 @@ import Data.Text.Encoding qualified as TE
 import Data.Time (defaultTimeLocale, getZonedTime)
 import Data.Time.Format (formatTime)
 import Effectful
-import Effectful.Concurrent (Concurrent, runConcurrent)
-import Effectful.Concurrent.STM (TQueue, atomically, newTQueueIO, writeTQueue)
+import Effectful.Concurrent (Concurrent, runConcurrent, threadDelay)
+import Effectful.Concurrent.Async (concurrently_)
+import Effectful.Concurrent.STM (TQueue, atomically, flushTQueue, newTQueueIO, writeTQueue)
 import Effectful.Console.ByteString (Console, runConsole)
 import Effectful.Console.ByteString qualified as Console
 import Effectful.Console.ByteString qualified as Eff
 import Effectful.Dispatch.Static (unsafeEff_)
 import Effectful.Network.Mqtt
 import Effectful.Reader.Static (Reader, asks, runReader)
+import Effectful.Wreq (Wreq, runWreq)
+import Effectful.Wreq qualified as W
 import FRP.Rhine
 import GHC.Generics (Generic)
 import Home.Reactive.App.Types (ParseResult (..))
@@ -54,6 +62,7 @@ import Home.Reactive.Orphans ()
 import Home.Reactive.Sesame5
 import Home.Reactive.Unlock
 import Options.Applicative qualified as Opts
+import System.Random (randomRIO)
 import Toml hiding (first, map)
 
 data Config = Config
@@ -106,7 +115,7 @@ data HomeEnv = HomeEnv
   , sesame :: {-# UNPACK #-} !(Maybe SesameEnv)
   , espresense :: !(Maybe ESPresenseConfig)
   , mackerel :: !(Maybe MackerelConfig)
-  , mackerelMetricsQueue :: !(TQueue [MackerelMetrics])
+  , mackerelMetricsQueue :: !(TQueue MackerelMetrics)
   , unlock :: !(Maybe UnlockConfig)
   , logLevel :: !LogLevel
   }
@@ -181,7 +190,7 @@ enqueueMackerelMetrics metrics = do
   mcfg <- asks @HomeEnv (.mackerel)
   forM_ mcfg $ \_ -> do
     queue <- asks @HomeEnv (.mackerelMetricsQueue)
-    atomically $ writeTQueue queue metrics
+    atomically $ mapM_ (writeTQueue queue) metrics
 
 withMqttDevices ::
   (Reader HomeEnv :> es) =>
@@ -309,11 +318,43 @@ application ::
   , Console :> es
   , IOE :> es
   , Mqtt :> es
+  , Wreq :> es
   ) =>
   Eff es ()
 application = do
   initializeESPresense
-  flow mainLoop
+  flow mainLoop `concurrently_` reportMackerelMetrics
+
+reportMackerelMetrics ::
+  ( Concurrent :> es
+  , Wreq :> es
+  , Reader HomeEnv :> es
+  , Console :> es
+  ) =>
+  Eff es ()
+reportMackerelMetrics = do
+  cfg <- asks @HomeEnv (.mackerel)
+  case cfg of
+    Nothing -> pure ()
+    Just MackerelConfig {..} -> M.forever do
+      let url = "https://api.mackerelio.com/api/v0/services/" <> T.unpack service <> "/tsdb"
+          opts =
+            W.defaults
+              & W.header "X-Api-Key" .~ [TE.encodeUtf8 apiKey]
+              & W.header "Content-Type" .~ ["application/json"]
+      metrics <- atomically . flushTQueue =<< asks @HomeEnv (.mackerelMetricsQueue)
+      if null metrics
+        then pure ()
+        else
+          100 & fix \self !n -> do
+            eith <- E.tryAny $ W.postWith opts url $ A.encode metrics
+            case eith of
+              Left exc -> do
+                display Error $ "Failed to report metrics to Mackerel: " <> T.pack (show exc)
+                wait <- unsafeEff_ $ randomRIO (100, n)
+                threadDelay $ wait * 1000
+                self (min 1_600 $ n * 2)
+              Right {} -> pure ()
 
 initializeESPresense :: (Mqtt :> es, Reader HomeEnv :> es) => Eff es ()
 initializeESPresense = do
@@ -359,7 +400,8 @@ defaultMainWith config = do
             runConcurrent $ do
               mackerelMetricsQueue <- newTQueueIO
               runReader HomeEnv {..} $
-                runMqttWith mqtt sess application
+                runWreq $
+                  runMqttWith mqtt sess application
 
 report :: SomeException -> IO ()
 report exc = do

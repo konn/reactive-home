@@ -84,6 +84,7 @@ library
     monad-schedule,
     monoidal-containers,
     optparse-applicative,
+    random,
     rhine,
     safe-exceptions,
     stm-containers,
