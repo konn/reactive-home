@@ -224,14 +224,14 @@ appBuffer ::
 appBuffer =
   arr (\MqttOutputs {..} -> (mqttESPStatus, mqttSnapshot))
     ^->> dropNothingBuffer fifoUnbounded
-      *-* keepLast emptyMqttSnapshot
-      >>-^ arr
-        ( \(esp, mqttSnapshot) ->
-            AppTick
-              { tickESP = maybe Heartbeat Event esp
-              , tickMqttSnapshot = mqttSnapshot
-              }
-        )
+    *-* keepLast emptyMqttSnapshot
+    >>-^ arr
+      ( \(esp, mqttSnapshot) ->
+          AppTick
+            { tickESP = maybe Heartbeat Event esp
+            , tickMqttSnapshot = mqttSnapshot
+            }
+      )
 
 dropNothingBuffer ::
   (Monad m) =>
@@ -352,9 +352,12 @@ reportMackerelMetrics = do
               Left exc -> do
                 display Error $ "Failed to report metrics to Mackerel: " <> T.pack (show exc)
                 wait <- unsafeEff_ $ randomRIO (100, n)
+                display Error $ "Retrying in " <> T.pack (show wait) <> " msecs..."
                 threadDelay $ wait * 1000
                 self (min 1_600 $ n * 2)
-              Right {} -> pure ()
+              Right {} -> do
+                display Info $ "Successfully reported " <> T.pack (show (length metrics)) <> " metrics to Mackerel."
+                pure ()
 
 initializeESPresense :: (Mqtt :> es, Reader HomeEnv :> es) => Eff es ()
 initializeESPresense = do
