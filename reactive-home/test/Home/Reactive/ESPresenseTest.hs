@@ -361,6 +361,25 @@ test_unlockHeartbeat =
               , TestSnapshot approachTime (exampleOccupiedSnapshot approachTime 4.5)
               ]
         runUnlockInputs exampleUnlockConfig snapshots @?= [Nothing, Nothing, Just Unlock]
+    , testCase "inactive approach after ready does not block later approach unlock" $ do
+        let inactiveTime = addUTCTime 1 baseTime
+            vacantTime = addUTCTime 2 baseTime
+            readyTime = addUTCTime (3 * 60 + 2) baseTime
+            occupiedInactiveTime = addUTCTime (3 * 60 + 3) baseTime
+            vacantAgainTime = addUTCTime (3 * 60 + 4) baseTime
+            approachTime = addUTCTime (3 * 60 + 5) baseTime
+            snapshots =
+              [ TestSnapshot baseTime (exampleOccupiedSnapshot baseTime 4.5)
+              , TestSnapshot inactiveTime (exampleOccupiedSnapshot inactiveTime 6.0)
+              , TestSnapshot vacantTime vacantSnapshot
+              , TestSnapshot readyTime vacantSnapshot
+              , TestSnapshot occupiedInactiveTime (exampleOccupiedSnapshot occupiedInactiveTime 6.0)
+              , TestSnapshot vacantAgainTime vacantSnapshot
+              , TestSnapshot approachTime (exampleOccupiedSnapshot approachTime 4.5)
+              ]
+            feedbacks = runUnlockFeedbackInputs exampleUnlockConfig snapshots
+        snd <$> feedbacks @?= [Nothing, Nothing, Nothing, Nothing, Nothing, Nothing, Just Unlock]
+        (.status) . fst <$> feedbacks @?= [Occupied, Occupied, Waiting, Vacant, ReadyForUnlock, Vacant, Occupied]
     , testCase "present dismissal switch suppresses unlock" $ do
         let readyTime = addUTCTime (3 * 60 + 1) baseTime
             approachTime = addUTCTime (3 * 60 + 2) baseTime
