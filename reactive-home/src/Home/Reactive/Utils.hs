@@ -19,12 +19,16 @@ module Home.Reactive.Utils (
   effReaderS,
   movingAverageS_,
   catMaybesS,
+  (<%~>),
 ) where
 
+import Control.Lens (Context, LensLike)
+import Control.Lens.Profunctor (fromLens)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Reader qualified as MTL
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Maybe (fromMaybe)
+import Data.Profunctor (Strong)
 import Data.Sequence qualified as Seq
 import Effectful (Eff, (:>))
 import Effectful.Reader.Static (Reader)
@@ -109,3 +113,8 @@ catMaybesS ::
 catMaybesS ini = feedback ini proc (mx, prev) -> do
   let !x = fromMaybe prev mx
   returnA -< (x, x)
+
+infixr 9 <%~>
+
+(<%~>) :: (Strong p) => LensLike (Context a b) s t a b -> p a b -> p s t
+(<%~>) = fromLens

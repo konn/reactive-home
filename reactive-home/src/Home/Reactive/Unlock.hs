@@ -140,13 +140,17 @@ unlockFeedbackS =
           | otherwise = Nothing
         !next =
           if
-            | near && prev `elem` [Vacant, ReadyForUnlock] -> (unlockCmd, Occupied)
+            | near ->
+                case prev of
+                  Vacant; ReadyForUnlock -> (unlockCmd, Occupied)
+                  Waiting; Occupied -> (Nothing, Occupied)
             | occupied ->
                 case prev of
                   (Vacant; ReadyForUnlock)
                     | not near -> (Nothing, ReadyForUnlock)
                     | otherwise -> (unlockCmd, Occupied)
                   _ -> (Nothing, Occupied)
+            | ReadyForUnlock <- prev -> (Nothing, Vacant)
             | duration >= thresh.seconds, not dismiss -> (Nothing, Vacant)
             | otherwise -> (Nothing, Waiting)
         !(event, status) = next

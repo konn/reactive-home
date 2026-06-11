@@ -84,6 +84,7 @@ library
     monad-schedule,
     monoidal-containers,
     optparse-applicative,
+    profunctors,
     random,
     rhine,
     safe-exceptions,
