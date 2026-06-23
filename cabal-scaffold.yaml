@@ -11,3 +11,4 @@ params:
   author-name: Hiromi ISHII
   author-email: konn.jinro_at_gmail.com
   github-username: konn
+  ghc: 9.12.4
