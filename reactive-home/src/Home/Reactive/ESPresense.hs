@@ -65,6 +65,8 @@ import Data.Hashable (Hashable)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Maybe (fromMaybe)
 import Data.Semigroup (Max (..))
+import Data.Sequence (Seq)
+import Data.Sequence qualified as Seq
 import Data.String (IsString)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -76,11 +78,7 @@ import GHC.Generics (Generic)
 import Home.Reactive.App.Types (ParseResult (..))
 import Home.Reactive.MQTT
 import Home.Reactive.Metrics.Mackerel
-import Home.Reactive.Utils (
-  MovingAverageConfig (..),
-  effReaderS,
-  movingAverageS,
- )
+import Home.Reactive.Utils (effReaderS)
 import Network.Mqtt.Types.Topic (stripPrefix)
 import Text.Read (readEither)
 import Toml hiding (first, map)
@@ -232,54 +230,6 @@ data Room = Room
   }
   deriving (Show, Eq, Ord, Generic)
 
-data SensorParams = SensorParams
-  { threshold :: !Float
-  , window :: !Int
-  , timeout :: !Duration
-  , distance :: !Float
-  , timestamp :: !UTCTime
-  , sensor :: !ESPSensorName
-  , device :: !ESPDeviceId
-  }
-  deriving (Show, Eq, Ord, Generic)
-
-data DistanceAverageParams = DistanceAverageParams
-  { window :: !Int
-  , timeout :: !Duration
-  , distance :: !Float
-  }
-  deriving (Show, Eq, Ord, Generic)
-
-distanceAverageS ::
-  (Time cl ~ UTCTime) =>
-  ClSF (Eff es) cl DistanceAverageParams (Maybe Float)
-distanceAverageS = proc DistanceAverageParams {..} -> do
-  movingAverageS
-    -<
-      ( MovingAverageConfig
-          { window = window
-          , timeout = Just timeout.seconds
-          }
-      , distance
-      )
-
-sensorPresenceS ::
-  (Time cl ~ UTCTime) =>
-  ClSF (Eff es) cl SensorParams Bool
-sensorPresenceS = proc SensorParams {..} -> do
-  TimeInfo {..} <- timeInfo -< ()
-  avg <-
-    distanceAverageS
-      -<
-        DistanceAverageParams
-          { window = window
-          , timeout = timeout
-          , distance = distance
-          }
-  let !fresh = absolute `diffTime` timestamp < timeout.seconds
-      !present = maybe False (<= threshold) avg && fresh
-  returnA -< present
-
 data DeviceStatus = DeviceStatus
   { device :: !ESPDeviceId
   , seenBy :: NonEmpty (ESPSensorName, UTCTime)
@@ -288,41 +238,102 @@ data DeviceStatus = DeviceStatus
   deriving (Show, Eq, Ord, Generic)
   deriving anyclass (ToJSON, FromJSON)
 
+data RoomPresenceState = RoomPresenceState
+  { occupants :: !(HashMap (ESPSensorName, ESPDeviceId) UTCTime)
+  , histories :: !(HashMap (ESPSensorName, ESPDeviceId) (Seq (Float, UTCTime)))
+  }
+  deriving (Show, Eq, Ord, Generic)
+
+emptyRoomPresenceState :: RoomPresenceState
+emptyRoomPresenceState =
+  RoomPresenceState
+    { occupants = HM.empty
+    , histories = HM.empty
+    }
+
 roomPresenceDeltaS ::
   (Time cl ~ UTCTime, Reader ESPresenseConfig :> es) =>
   ClSF (Eff es) cl (Room, Heartbeated ESPStatus) (ESPresensePatch ESPDeviceId DeviceStatus)
 roomPresenceDeltaS = effReaderS @ESPresenseConfig $
-  feedback HM.empty proc (((room, evt), cfg), prevOccupants) -> do
+  feedback emptyRoomPresenceState proc (((room, evt), cfg), prev) -> do
     TimeInfo {..} <- timeInfo -< ()
-    let !occupants =
-          HM.filter
-            (\stt -> absolute `diffTime` stt < room.timeout.seconds)
-            $ HM.filterWithKey
-              ( \(sensorName, _) stt ->
-                  absolute `diffTime` stt < sensorTimeout cfg sensorName
-              )
-              prevOccupants
-    occupants' <- case evt of
-      Event stt
-        | Just sensor <- find (\s -> s.name == stt.sensor) cfg.sensors
-        , Just sensorCfg <- find (\s -> s.sensor == stt.sensor) room.sensors -> do
-            let ps =
-                  SensorParams
-                    { threshold = sensorCfg.distance
-                    , window = fromMaybe 5 sensor.window
-                    , timeout = sensor.timeout
-                    , distance = stt.distance
-                    , timestamp = stt.timestamp
-                    , sensor = stt.sensor
-                    , device = stt.id
-                    }
-            present <- sensorPresenceS -< ps
-            if present
-              then returnA -< HM.insert (sensor.name, stt.id) stt.timestamp occupants
-              else returnA -< HM.delete (sensor.name, stt.id) occupants
-      _ -> returnA -< occupants
-    let !delta = diffPatch (toOccupancyMap prevOccupants) (toOccupancyMap occupants')
-    returnA -< (delta, occupants')
+    let !histories = expirePresenceHistories cfg absolute prev.histories
+        !occupants =
+          expireOccupants cfg room absolute prev.occupants
+        (!histories', !occupants') =
+          case evt of
+            Event stt
+              | Just sensor <- find (\s -> s.name == stt.sensor) cfg.sensors
+              , Just sensorCfg <- find (\s -> s.sensor == stt.sensor) room.sensors ->
+                  let !key = (stt.sensor, stt.id)
+                      !hist = updatePresenceHistory sensor absolute stt $ HM.lookupDefault Seq.empty key histories
+                      !historiesNext = HM.insert key hist histories
+                      !present = isPresentFromHistory sensor sensorCfg absolute hist
+                   in if present
+                        then (historiesNext, HM.insert key stt.timestamp occupants)
+                        else (historiesNext, HM.delete key occupants)
+            _ -> (histories, occupants)
+        !delta = diffPatch (toOccupancyMap prev.occupants) (toOccupancyMap occupants')
+    returnA -< (delta, RoomPresenceState {occupants = occupants', histories = histories'})
+
+expireOccupants ::
+  ESPresenseConfig ->
+  Room ->
+  UTCTime ->
+  HashMap (ESPSensorName, ESPDeviceId) UTCTime ->
+  HashMap (ESPSensorName, ESPDeviceId) UTCTime
+expireOccupants cfg room now =
+  HM.filterWithKey
+    ( \(sensorName, _) seenAt ->
+        now `diffTime` seenAt < room.timeout.seconds
+          && now `diffTime` seenAt < sensorTimeout cfg sensorName
+    )
+
+expirePresenceHistories ::
+  ESPresenseConfig ->
+  UTCTime ->
+  HashMap (ESPSensorName, ESPDeviceId) (Seq (Float, UTCTime)) ->
+  HashMap (ESPSensorName, ESPDeviceId) (Seq (Float, UTCTime))
+expirePresenceHistories cfg now =
+  HM.mapMaybeWithKey \(sensorName, _) hist ->
+    let !fresh = freshPresenceHistory (sensorTimeout cfg sensorName) now hist
+     in if Seq.null fresh then Nothing else Just fresh
+
+updatePresenceHistory ::
+  ESPSensor ->
+  UTCTime ->
+  ESPStatus ->
+  Seq (Float, UTCTime) ->
+  Seq (Float, UTCTime)
+updatePresenceHistory sensor now stt =
+  freshPresenceHistory sensor.timeout.seconds now
+    . Seq.take (max 1 $ fromMaybe 5 sensor.window)
+    . ((stt.distance, stt.timestamp) Seq.<|)
+
+freshPresenceHistory ::
+  Diff UTCTime ->
+  UTCTime ->
+  Seq (Float, UTCTime) ->
+  Seq (Float, UTCTime)
+freshPresenceHistory timeout now =
+  Seq.filter \(_, seenAt) -> now `diffTime` seenAt <= timeout
+
+isPresentFromHistory ::
+  ESPSensor ->
+  RoomSensor ->
+  UTCTime ->
+  Seq (Float, UTCTime) ->
+  Bool
+isPresentFromHistory sensor sensorCfg now hist =
+  Seq.length hist >= window
+    && averageDistance hist <= sensorCfg.distance
+    && Prelude.any (\(_, seenAt) -> now `diffTime` seenAt < sensor.timeout.seconds) hist
+  where
+    !window = max 1 $ fromMaybe 5 sensor.window
+
+averageDistance :: Seq (Float, UTCTime) -> Float
+averageDistance hist =
+  Prelude.sum (fst <$> hist) / fromIntegral (Seq.length hist)
 
 sensorTimeout :: ESPresenseConfig -> ESPSensorName -> Diff UTCTime
 sensorTimeout cfg sensorName =

@@ -207,6 +207,28 @@ test_roomAbsence =
                 , TestInput (addUTCTime 3 baseTime) Heartbeat
                 ]
         sensorDeviceCount "entrance" <$> snapshots @?= [1, 1, 0]
+    , testCase "interleaved far sensor readings do not clear another sensor's room presence" $ do
+        let bedroom1 = addUTCTime 1 baseTime
+            bedroom2 = addUTCTime 2 baseTime
+            entrance1 = addUTCTime 3 baseTime
+            entrance2 = addUTCTime 4 baseTime
+            entrance3 = addUTCTime 5 baseTime
+            bedroom3 = addUTCTime 6 baseTime
+            snapshots =
+              runSnapshotInputs
+                windowedPresenceConfig
+                [ TestInput baseTime (Event $ statusAt baseTime "bedroom" 1)
+                , TestInput bedroom1 (Event $ statusAt bedroom1 "bedroom" 1)
+                , TestInput bedroom2 (Event $ statusAt bedroom2 "bedroom" 1)
+                , TestInput entrance1 (Event $ statusAt entrance1 "entrance" 8)
+                , TestInput entrance2 (Event $ statusAt entrance2 "entrance" 8)
+                , TestInput entrance3 (Event $ statusAt entrance3 "entrance" 8)
+                , TestInput bedroom3 (Event $ statusAt bedroom3 "bedroom" 1)
+                ]
+            finalSnapshot = last snapshots
+        length (finalSnapshot.rooms HM.! "home") @?= 1
+        sensorDeviceCount "bedroom" finalSnapshot @?= 1
+        sensorDeviceCount "entrance" finalSnapshot @?= 1
     ]
 
 test_deltas :: TestTree
@@ -398,6 +420,15 @@ test_unlockHeartbeat =
               , TestUnlockSnapshot approachTime emptyMqttSnapshot (exampleOccupiedSnapshot approachTime 4.5)
               ]
         runUnlockInputsWithMqtt dismissUnlockConfig snapshots @?= [Nothing, Nothing, Just Unlock]
+    , testCase "approach while room remains occupied does not emit unlock after delay" $ do
+        let waitingTime = addUTCTime (3 * 60 + 1) baseTime
+            approachTime = addUTCTime (3 * 60 + 2) baseTime
+            snapshots =
+              [ TestSnapshot baseTime (exampleOccupiedSnapshot baseTime 6.0)
+              , TestSnapshot waitingTime (exampleOccupiedSnapshot waitingTime 6.0)
+              , TestSnapshot approachTime (exampleOccupiedSnapshot approachTime 4.5)
+              ]
+        runUnlockInputs exampleUnlockConfig snapshots @?= [Nothing, Nothing, Nothing]
     ]
 
 data TestInput = TestInput
@@ -682,6 +713,43 @@ absenceConfig =
                 , sensors =
                     [ RoomSensor {sensor = "entrance", distance = 2}
                     , RoomSensor {sensor = "bedroom", distance = 2}
+                    ]
+                }
+            )
+          ]
+    }
+
+windowedPresenceConfig :: ESPresenseConfig
+windowedPresenceConfig =
+  ESPresenseConfig
+    { devices = ["watch:"]
+    , sensors =
+        [ ESPSensor
+            { name = "entrance"
+            , max_distance = 8
+            , skip_distance = 0.5
+            , skip_ms = 2500
+            , timeout = seconds 30
+            , window = Just 3
+            }
+        , ESPSensor
+            { name = "bedroom"
+            , max_distance = 8
+            , skip_distance = 0.5
+            , skip_ms = 2500
+            , timeout = seconds 30
+            , window = Just 3
+            }
+        ]
+    , rooms =
+        HM.fromList
+          [
+            ( "home"
+            , Room
+                { timeout = minutes 3
+                , sensors =
+                    [ RoomSensor {sensor = "entrance", distance = 6.5}
+                    , RoomSensor {sensor = "bedroom", distance = 5}
                     ]
                 }
             )
