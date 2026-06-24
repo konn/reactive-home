@@ -181,13 +181,22 @@ test_roomAbsence :: TestTree
 test_roomAbsence =
   testGroup
     "room absence"
-    [ testCase "heartbeat reports configured rooms empty after ESP sensor timeout" $ do
+    [ testCase "heartbeat keeps configured rooms occupied after ESP sensor timeout" $ do
         let snapshots =
               runSnapshotInputs
                 absenceConfig
                 [ TestInput baseTime (Event $ statusAt baseTime "entrance" 1)
                 , TestInput (addUTCTime 1 baseTime) Heartbeat
                 , TestInput (addUTCTime 3 baseTime) Heartbeat
+                ]
+        length . (HM.! "home") . (.rooms) <$> snapshots @?= [1, 1, 1]
+    , testCase "heartbeat reports configured rooms empty after room timeout" $ do
+        let snapshots =
+              runSnapshotInputs
+                absenceConfig
+                [ TestInput baseTime (Event $ statusAt baseTime "entrance" 1)
+                , TestInput (addUTCTime 1 baseTime) Heartbeat
+                , TestInput (addUTCTime (3 * 60 + 1) baseTime) Heartbeat
                 ]
         length . (HM.! "home") . (.rooms) <$> snapshots @?= [1, 1, 0]
     , testCase "heartbeat keeps room occupied before ESP sensor timeout" $ do
@@ -229,6 +238,18 @@ test_roomAbsence =
         length (finalSnapshot.rooms HM.! "home") @?= 1
         sensorDeviceCount "bedroom" finalSnapshot @?= 1
         sensorDeviceCount "entrance" finalSnapshot @?= 1
+    , testCase "room presence bridges ESP sensor report gaps shorter than room timeout" $ do
+        let gapEnd = addUTCTime 31 baseTime
+            snapshots =
+              runSnapshotInputs
+                windowedPresenceConfig
+                [ TestInput baseTime (Event $ statusAt baseTime "bedroom" 1)
+                , TestInput (addUTCTime 1 baseTime) (Event $ statusAt (addUTCTime 1 baseTime) "bedroom" 1)
+                , TestInput (addUTCTime 2 baseTime) (Event $ statusAt (addUTCTime 2 baseTime) "bedroom" 1)
+                , TestInput gapEnd Heartbeat
+                , TestInput (addUTCTime 32 baseTime) (Event $ statusAt (addUTCTime 32 baseTime) "entrance" 1.5)
+                ]
+        length . (HM.! "home") . (.rooms) <$> snapshots @?= [0, 0, 1, 1, 1]
     ]
 
 test_deltas :: TestTree
@@ -262,12 +283,25 @@ test_deltas =
                 ]
         last deltas
           @?= Nothing
-    , testCase "heartbeat after sensor timeout emits sensor and room deletes" $ do
+    , testCase "heartbeat after sensor timeout emits only sensor deletes" $ do
         let deltas =
               runDeltaInputs
                 absenceConfig
                 [ TestInput baseTime (Event $ statusAt baseTime "entrance" 1)
                 , TestInput (addUTCTime 3 baseTime) Heartbeat
+                ]
+        last deltas
+          @?= Just
+            ESPresenseDelta
+              { sensors = HM.fromList [("entrance", HM.fromList [("watch:", Nothing)])]
+              , rooms = HM.empty
+              }
+    , testCase "heartbeat after room timeout emits room deletes" $ do
+        let deltas =
+              runDeltaInputs
+                absenceConfig
+                [ TestInput baseTime (Event $ statusAt baseTime "entrance" 1)
+                , TestInput (addUTCTime (3 * 60 + 1) baseTime) Heartbeat
                 ]
         last deltas
           @?= Just
@@ -283,7 +317,7 @@ test_deltas =
                 [ TestInput baseTime (Event $ statusAt baseTime "entrance" 1)
                 , TestInput bedroomTime (Event $ statusAt bedroomTime "bedroom" 1)
                 , TestInput (addUTCTime 2.25 baseTime) Heartbeat
-                , TestInput (addUTCTime 3 baseTime) Heartbeat
+                , TestInput (addUTCTime (3 * 60 + 1) baseTime) Heartbeat
                 ]
         deltas
           @?= [ Just
@@ -307,7 +341,7 @@ test_deltas =
               , Just
                   ESPresenseDelta
                     { sensors = HM.fromList [("entrance", HM.fromList [("watch:", Nothing)])]
-                    , rooms = HM.fromList [("home", HM.fromList [("watch:", Just $ deviceStatus [("bedroom", bedroomTime)])])]
+                    , rooms = HM.empty
                     }
               , Just
                   ESPresenseDelta

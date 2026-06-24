@@ -282,11 +282,10 @@ expireOccupants ::
   UTCTime ->
   HashMap (ESPSensorName, ESPDeviceId) UTCTime ->
   HashMap (ESPSensorName, ESPDeviceId) UTCTime
-expireOccupants cfg room now =
+expireOccupants _cfg room now =
   HM.filterWithKey
-    ( \(sensorName, _) seenAt ->
+    ( \_ seenAt ->
         now `diffTime` seenAt < room.timeout.seconds
-          && now `diffTime` seenAt < sensorTimeout cfg sensorName
     )
 
 expirePresenceHistories ::
