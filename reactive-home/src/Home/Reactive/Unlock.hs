@@ -150,7 +150,7 @@ unlockFeedbackS =
                     | not near -> (Nothing, ReadyForUnlock)
                     | otherwise -> (unlockCmd, Occupied)
                   _ -> (Nothing, Occupied)
-            | ReadyForUnlock <- prev -> (Nothing, Vacant)
+            | (ReadyForUnlock; Vacant) <- prev -> (Nothing, Vacant)
             | duration >= thresh.seconds, not dismiss -> (Nothing, Vacant)
             | otherwise -> (Nothing, Waiting)
         !(event, status) = next

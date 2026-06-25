@@ -436,6 +436,23 @@ test_unlockHeartbeat =
             feedbacks = runUnlockFeedbackInputs exampleUnlockConfig snapshots
         snd <$> feedbacks @?= [Nothing, Nothing, Nothing, Nothing, Nothing, Nothing, Just Unlock]
         (.status) . fst <$> feedbacks @?= [Occupied, Occupied, Waiting, Vacant, ReadyForUnlock, Vacant, Occupied]
+    , testCase "far room presence after vacancy does not restart waiting" $ do
+        let vacantTime = addUTCTime 1 baseTime
+            readyTime = addUTCTime (3 * 60 + 1) baseTime
+            farOccupiedTime = addUTCTime (3 * 60 + 2) baseTime
+            farVacantTime = addUTCTime (3 * 60 + 3) baseTime
+            heartbeatTime = addUTCTime (3 * 60 + 4) baseTime
+            snapshots =
+              [ TestSnapshot baseTime (exampleOccupiedSnapshot baseTime 6.0)
+              , TestSnapshot vacantTime vacantSnapshot
+              , TestSnapshot readyTime vacantSnapshot
+              , TestSnapshot farOccupiedTime (exampleOccupiedSnapshot farOccupiedTime 6.0)
+              , TestSnapshot farVacantTime (exampleSensorOnlySnapshot farVacantTime 6.0)
+              , TestSnapshot heartbeatTime (exampleSensorOnlySnapshot farVacantTime 6.0)
+              ]
+            feedbacks = runUnlockFeedbackInputs exampleUnlockConfig snapshots
+        snd <$> feedbacks @?= replicate 6 Nothing
+        (.status) . fst <$> feedbacks @?= [Occupied, Waiting, Vacant, ReadyForUnlock, Vacant, Vacant]
     , testCase "present dismissal switch suppresses unlock" $ do
         let readyTime = addUTCTime (3 * 60 + 1) baseTime
             approachTime = addUTCTime (3 * 60 + 2) baseTime
@@ -643,6 +660,13 @@ exampleOccupiedSnapshot timestamp entranceDistance =
   ESPresenseSnapshot
     { sensors = HM.fromList [("entrance", HM.fromList [("watch:", sensorStateAt timestamp entranceDistance)])]
     , rooms = HM.fromList [("home", [deviceStatus [("entrance", timestamp)]])]
+    }
+
+exampleSensorOnlySnapshot :: UTCTime -> Float -> ESPresenseSnapshot
+exampleSensorOnlySnapshot timestamp entranceDistance =
+  ESPresenseSnapshot
+    { sensors = HM.fromList [("entrance", HM.fromList [("watch:", sensorStateAt timestamp entranceDistance)])]
+    , rooms = HM.fromList [("home", [])]
     }
 
 exampleBedroomSnapshot :: UTCTime -> Float -> ESPresenseSnapshot
