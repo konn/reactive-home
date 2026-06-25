@@ -245,6 +245,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: fourmolu/fourmolu-action@v12
         with:
+          version: 0.18.0.0
           pattern: |
             **/*.hs
             !**/Setup.hs
