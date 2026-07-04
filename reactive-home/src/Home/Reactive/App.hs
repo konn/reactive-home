@@ -55,6 +55,7 @@ import Effectful.Wreq qualified as W
 import FRP.Rhine
 import GHC.Generics (Generic)
 import Home.Reactive.App.Types (ParseResult (..))
+import Home.Reactive.AutoLock
 import Home.Reactive.ESPresense
 import Home.Reactive.MQTT
 import Home.Reactive.Metrics.Mackerel
@@ -151,12 +152,14 @@ processESP = proc msg -> do
 
 data MqttOutputs = MqttOutputs
   { mqttESPStatus :: !(Maybe ESPStatus)
+  , mqttSesameStatus :: !(Maybe SesameStatus)
   , mqttSnapshot :: !MqttSnapshot
   }
   deriving (Show, Eq, Ord, Generic)
 
 data AppTick = AppTick
   { tickESP :: !(Heartbeated ESPStatus)
+  , tickSesame :: !(Heartbeated SesameStatus)
   , tickMqttSnapshot :: !MqttSnapshot
   }
   deriving (Show, Eq, Ord, Generic)
@@ -170,9 +173,9 @@ processMqtt ::
 processMqtt = proc () -> do
   msg <- tagS -< ()
   arrMCl (display Debug . T.show) -< msg
-  ssm <- arr toMetrics <-< processSesame -< msg
+  ssm <- processSesame -< msg
   esp <- processESP -< msg
-  arrMCl enqueueMackerelMetrics -< ssm <> toMetrics esp
+  arrMCl enqueueMackerelMetrics -< toMetrics ssm <> toMetrics esp
   devices <- constMCl (asks @HomeEnv (.mqttDevices)) -< ()
   mqttSnapshot <- case devices of
     Nothing -> returnA -< emptyMqttSnapshot
@@ -181,6 +184,7 @@ processMqtt = proc () -> do
     -<
       MqttOutputs
         { mqttESPStatus = esp
+        , mqttSesameStatus = ssm
         , mqttSnapshot
         }
 
@@ -222,13 +226,14 @@ appBuffer ::
     MqttOutputs
     AppTick
 appBuffer =
-  arr (\MqttOutputs {..} -> (mqttESPStatus, mqttSnapshot))
-    ^->> dropNothingBuffer fifoUnbounded
-      *-* keepLast emptyMqttSnapshot
+  arr (\MqttOutputs {..} -> ((mqttESPStatus, mqttSnapshot), mqttSesameStatus))
+    ^->> (dropNothingBuffer fifoUnbounded *-* keepLast emptyMqttSnapshot)
+      *-* dropNothingBuffer fifoUnbounded
       >>-^ arr
-        ( \(esp, mqttSnapshot) ->
+        ( \((esp, mqttSnapshot), sesame) ->
             AppTick
               { tickESP = maybe Heartbeat Event esp
+              , tickSesame = maybe Heartbeat Event sesame
               , tickMqttSnapshot = mqttSnapshot
               }
         )
@@ -247,13 +252,20 @@ dropNothingBuffer ResamplingBuffer {..} =
     , buffer
     }
 
-processESPHeartbeat ::
+processHeartbeat ::
   ( Reader HomeEnv :> es
   , Console :> es
   , Mqtt :> es
   ) =>
   ClSF (Eff es) (ESPHeartbeatClock es) AppTick ()
-processESPHeartbeat = proc tick -> do
+processHeartbeat = proc tick -> do
+  sesame <- constMCl (asks @HomeEnv (.sesame)) -< ()
+  case sesame of
+    Nothing -> returnA -< ()
+    Just {} -> do
+      result <- hoistClSF withSesameConfig autolockEventS -< (tick.tickMqttSnapshot, tick.tickSesame)
+      void $ arrMCl (display Debug . ("AutoLock: " <>) . T.show) -< result
+      void $ hoistClSF withSesameConfig (arrMCl handleAutoLockEvent) -< result
   mcfg <- constMCl (asks @HomeEnv (.espresense)) -< ()
   case mcfg of
     Nothing -> returnA -< ()
@@ -300,7 +312,7 @@ mainLoop ::
   ) =>
   Rhine (Eff es) (AppClock es) () ()
 mainLoop =
-  processMqtt @@ EffMqttClock >-- appBuffer --> processESPHeartbeat @@ ioClock waitClock
+  processMqtt @@ EffMqttClock >-- appBuffer --> processHeartbeat @@ ioClock waitClock
 
 display :: (Reader HomeEnv :> es, Console :> es) => LogLevel -> T.Text -> Eff es ()
 display level a = do

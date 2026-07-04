@@ -5,9 +5,12 @@
 
 module Home.Reactive.AppTest (test_configParsing) where
 
+import Data.HashMap.Strict qualified as HM
 import Data.Text qualified as T
 import Home.Reactive.App (Config (..))
+import Home.Reactive.ESPresense (seconds)
 import Home.Reactive.MQTT (mqttTopicFilters)
+import Home.Reactive.Sesame5 (AutoLockDismissCondition (..), SesameConfig (..), SesameDevice (..), SesameUUID (..))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase, (@?=))
 import Toml (decodeExact, genericCodec)
@@ -44,6 +47,33 @@ test_configParsing =
     , testCase "dismissal switch config without MQTT switch has no switch subscription" $
         (foldMap mqttTopicFilters . (.mqtt) <$> decodeExact (genericCodec @Config) dismissWithoutMqttSwitchToml)
           @?= Right []
+    , testCase "Sesame autolock timeout is optional per device" $
+        (fmap (.devices) . (.sesame) <$> decodeExact (genericCodec @Config) sesameAutoLockToml)
+          @?= Right
+            ( Just $
+                HM.fromList
+                  [
+                    ( "front"
+                    , SesameDevice
+                        { uuid = UUID "01234567-89ab-cdef-0123-456789abcdef"
+                        , autolock_timeout = Just $ seconds 30
+                        , autolock_dismiss =
+                            [ AutoLockDismissCondition
+                                { switch = "do-not-disturb"
+                                }
+                            ]
+                        }
+                    )
+                  ,
+                    ( "back"
+                    , SesameDevice
+                        { uuid = UUID "fedcba98-7654-3210-fedc-ba9876543210"
+                        , autolock_timeout = Nothing
+                        , autolock_dismiss = []
+                        }
+                    )
+                  ]
+            )
     ]
 
 withoutClientIdToml :: T.Text
@@ -118,4 +148,28 @@ dismissWithoutMqttSwitchToml =
 
   [[unlock.dismiss]]
   switch = "do-not-disturb"
+  """
+
+sesameAutoLockToml :: T.Text
+sesameAutoLockToml =
+  """
+  host = "localhost"
+  port = 1883
+
+  [sesame]
+  prefix = "haskesame"
+
+  [[sesame.devices]]
+  key = "front"
+  [sesame.devices.val]
+  uuid = "01234567-89ab-cdef-0123-456789abcdef"
+  autolock_timeout = "30s"
+
+  [[sesame.devices.val.autolock_dismiss]]
+  switch = "do-not-disturb"
+
+  [[sesame.devices]]
+  key = "back"
+  [sesame.devices.val]
+  uuid = "fedcba98-7654-3210-fedc-ba9876543210"
   """

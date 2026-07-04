@@ -59,6 +59,7 @@ library
     Home.Reactive
     Home.Reactive.App
     Home.Reactive.App.Types
+    Home.Reactive.AutoLock
     Home.Reactive.ESPresense
     Home.Reactive.MQTT
     Home.Reactive.Metrics.Mackerel
@@ -119,6 +120,7 @@ test-suite reactive-home-test
   -- cabal-gild: discover test --exclude=test/Test.hs
   other-modules:
     Home.Reactive.AppTest
+    Home.Reactive.AutoLockTest
     Home.Reactive.ESPresenseTest
 
   build-tool-depends:

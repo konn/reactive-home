@@ -12,6 +12,7 @@
 
 module Home.Reactive.Sesame5 (
   SesameDevice (..),
+  AutoLockDismissCondition (..),
   SesameConfig (..),
   SesameUUID (..),
   SesameEnv (..),
@@ -23,6 +24,7 @@ module Home.Reactive.Sesame5 (
   sesameTopicFilters,
   parseSesameStatus,
   sesameStatuses,
+  sesameCommandTopic,
   buildSesameStatus,
   aggregateSesameStatus,
 ) where
@@ -43,14 +45,25 @@ import Effectful
 import FRP.Rhine
 import GHC.Generics (Generic)
 import Home.Reactive.App.Types (ParseResult (..))
+import Home.Reactive.ESPresense (Duration)
 import Home.Reactive.MQTT
 import Home.Reactive.Metrics.Mackerel
 import Network.Mqtt.Types.Topic (stripPrefix)
 import Toml hiding (map)
 
-data SesameDevice = SesameDevice {uuid :: SesameUUID}
+data SesameDevice = SesameDevice
+  { uuid :: SesameUUID
+  , autolock_timeout :: !(Maybe Duration)
+  , autolock_dismiss :: ![AutoLockDismissCondition]
+  }
   deriving (Show, Eq, Ord, Generic)
   deriving (HasCodec, HasItemCodec) via TomlTable SesameDevice
+
+data AutoLockDismissCondition = AutoLockDismissCondition
+  { switch :: !T.Text
+  }
+  deriving (Show, Eq, Ord, Generic)
+  deriving (HasCodec, HasItemCodec) via TomlTable AutoLockDismissCondition
 
 data SesameConfig = SesameConfig
   { prefix :: !T.Text
@@ -97,6 +110,9 @@ sesameTopicFilters SesameConfig {..}
       | device <- F.toList devices
       , action <- ["set", "get"]
       ]
+
+sesameCommandTopic :: T.Text -> SesameDevice -> Topic
+sesameCommandTopic prefix device = Topic prefix <> Topic device.uuid.raw <> "set"
 
 data LockStatus = LOCKED | UNLOCKED
   deriving (Show, Eq, Ord, Generic)

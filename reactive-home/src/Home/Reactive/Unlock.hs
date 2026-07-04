@@ -181,5 +181,5 @@ handleUnlockEvent Unlock = do
     case HM.lookup lock sesames of
       Nothing -> pure () -- TODO: Log the error.
       Just dev -> do
-        let topic = Topic prefix <> Topic dev.uuid.raw <> "set"
+        let topic = sesameCommandTopic prefix dev
         publish_ topic "UNLOCKED"
