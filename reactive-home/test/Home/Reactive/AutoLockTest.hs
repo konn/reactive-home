@@ -11,7 +11,7 @@ import Data.Time (UTCTime, addUTCTime, diffUTCTime)
 import Effectful (Eff, runPureEff)
 import Effectful.Reader.Static (Reader, runReader)
 import FRP.Rhine (ClSF, Clock (..), Result (..), TimeInfo (..), stepAutomaton)
-import Home.Reactive.AutoLock (AutoLockEvent (..), autolockEventS)
+import Home.Reactive.AutoLock (AutoLockEvent (..), AutoLockLog (..), AutoLockOutput (..), autolockEventS)
 import Home.Reactive.ESPresense (Heartbeated (..), seconds)
 import Home.Reactive.MQTT (MqttSnapshot (..))
 import Home.Reactive.Sesame5
@@ -43,6 +43,19 @@ test_autolock =
                 , TestInput afterTimeout Heartbeat
                 ]
         outputs @?= [[], [], [AutoLockEvent "front" autoLockDevice]]
+    , testCase "logs timer start and fire" $ do
+        let unlockTime = addUTCTime 1 baseTime
+            afterTimeout = addUTCTime 4.1 baseTime
+            outputs =
+              runAutoLockOutputs
+                autoLockEnv
+                [ TestInput unlockTime (Event $ sesameStatus unlockTime UNLOCKED)
+                , TestInput afterTimeout Heartbeat
+                ]
+        (.logs) <$> outputs
+          @?= [ [AutoLockTimerStarted "front" (addUTCTime 3 unlockTime)]
+              , [AutoLockFired "front"]
+              ]
     , testCase "device without autolock_timeout never starts timer" $ do
         let unlockTime = addUTCTime 1 baseTime
             afterTimeout = addUTCTime 60 baseTime
@@ -65,6 +78,19 @@ test_autolock =
                 , TestInput afterTimeout Heartbeat
                 ]
         outputs @?= [[], [], []]
+    , testCase "logs lock cancellation during timeout" $ do
+        let unlockTime = addUTCTime 1 baseTime
+            lockTime = addUTCTime 2 baseTime
+            outputs =
+              runAutoLockOutputs
+                autoLockEnv
+                [ TestInput unlockTime (Event $ sesameStatus unlockTime UNLOCKED)
+                , TestInput lockTime (Event $ sesameStatus lockTime LOCKED)
+                ]
+        (.logs) <$> outputs
+          @?= [ [AutoLockTimerStarted "front" (addUTCTime 3 unlockTime)]
+              , [AutoLockTimerCanceled "front"]
+              ]
     , testCase "second unlock during timeout does not alter original timer" $ do
         let unlockTime = addUTCTime 1 baseTime
             secondUnlockTime = addUTCTime 2 baseTime
@@ -79,6 +105,19 @@ test_autolock =
                 , TestInput afterRestartedTimeout Heartbeat
                 ]
         outputs @?= [[], [], [AutoLockEvent "front" autoLockDevice], []]
+    , testCase "logs repeated unlock without changing timer" $ do
+        let unlockTime = addUTCTime 1 baseTime
+            secondUnlockTime = addUTCTime 2 baseTime
+            outputs =
+              runAutoLockOutputs
+                autoLockEnv
+                [ TestInput unlockTime (Event $ sesameStatus unlockTime UNLOCKED)
+                , TestInput secondUnlockTime (Event $ sesameStatus secondUnlockTime UNLOCKED)
+                ]
+        (.logs) <$> outputs
+          @?= [ [AutoLockTimerStarted "front" (addUTCTime 3 unlockTime)]
+              , [AutoLockTimerKept "front"]
+              ]
     , testCase "dismissal switch prevents starting timer" $ do
         let unlockTime = addUTCTime 1 baseTime
             afterTimeout = addUTCTime 4.1 baseTime
@@ -90,6 +129,14 @@ test_autolock =
                 , TestInput afterTimeout Heartbeat
                 ]
         outputs @?= [[], []]
+    , testCase "logs dismissal when timer start is suppressed" $ do
+        let unlockTime = addUTCTime 1 baseTime
+            outputs =
+              runAutoLockOutputsWithMqtt
+                dismissedMqttSnapshot
+                dismissedAutoLockEnv
+                [TestInput unlockTime (Event $ sesameStatus unlockTime UNLOCKED)]
+        (.logs) <$> outputs @?= [[AutoLockStartDismissed "front"]]
     , testCase "dismissal switch prevents firing pending timer" $ do
         let unlockTime = addUTCTime 1 baseTime
             afterTimeout = addUTCTime 4.1 baseTime
@@ -100,6 +147,19 @@ test_autolock =
                 , TestMqttInput afterTimeout dismissedMqttSnapshot Heartbeat
                 ]
         outputs @?= [[], []]
+    , testCase "logs dismissal when pending timer reaches deadline" $ do
+        let unlockTime = addUTCTime 1 baseTime
+            afterTimeout = addUTCTime 4.1 baseTime
+            outputs =
+              runAutoLockMqttOutputs
+                dismissedAutoLockEnv
+                [ TestMqttInput unlockTime emptyMqttSnapshot (Event $ sesameStatus unlockTime UNLOCKED)
+                , TestMqttInput afterTimeout dismissedMqttSnapshot Heartbeat
+                ]
+        (.logs) <$> outputs
+          @?= [ [AutoLockTimerStarted "front" (addUTCTime 3 unlockTime)]
+              , [AutoLockFireDismissed "front"]
+              ]
     ]
 
 data TestInput = TestInput
@@ -118,25 +178,34 @@ type AutoLockS =
     (Eff '[Reader SesameEnv])
     TestClock
     (MqttSnapshot, Heartbeated SesameStatus)
-    [AutoLockEvent]
+    AutoLockOutput
 
 runAutoLockInputs :: SesameEnv -> [TestInput] -> [[AutoLockEvent]]
-runAutoLockInputs env inputs =
-  runAutoLockInputsWithMqtt emptyMqttSnapshot env inputs
+runAutoLockInputs env inputs = map (.events) $ runAutoLockOutputs env inputs
+
+runAutoLockOutputs :: SesameEnv -> [TestInput] -> [AutoLockOutput]
+runAutoLockOutputs env inputs =
+  runAutoLockOutputsWithMqtt emptyMqttSnapshot env inputs
 
 runAutoLockInputsWithMqtt :: MqttSnapshot -> SesameEnv -> [TestInput] -> [[AutoLockEvent]]
-runAutoLockInputsWithMqtt mqtt env inputs =
-  runAutoLockMqttInputs
+runAutoLockInputsWithMqtt mqtt env inputs = map (.events) $ runAutoLockOutputsWithMqtt mqtt env inputs
+
+runAutoLockOutputsWithMqtt :: MqttSnapshot -> SesameEnv -> [TestInput] -> [AutoLockOutput]
+runAutoLockOutputsWithMqtt mqtt env inputs =
+  runAutoLockMqttOutputs
     env
     [ TestMqttInput at mqtt input
     | TestInput {..} <- inputs
     ]
 
 runAutoLockMqttInputs :: SesameEnv -> [TestMqttInput] -> [[AutoLockEvent]]
-runAutoLockMqttInputs env inputs =
+runAutoLockMqttInputs env inputs = map (.events) $ runAutoLockMqttOutputs env inputs
+
+runAutoLockMqttOutputs :: SesameEnv -> [TestMqttInput] -> [AutoLockOutput]
+runAutoLockMqttOutputs env inputs =
   runPureEff $ runReader env $ go autolockEventS Nothing inputs
   where
-    go :: AutoLockS -> Maybe UTCTime -> [TestMqttInput] -> Eff '[Reader SesameEnv] [[AutoLockEvent]]
+    go :: AutoLockS -> Maybe UTCTime -> [TestMqttInput] -> Eff '[Reader SesameEnv] [AutoLockOutput]
     go _ _ [] = pure []
     go signal previous (TestMqttInput {..} : rest) = do
       let timeInfo =

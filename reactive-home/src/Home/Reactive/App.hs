@@ -264,8 +264,8 @@ processHeartbeat = proc tick -> do
     Nothing -> returnA -< ()
     Just {} -> do
       result <- hoistClSF withSesameConfig autolockEventS -< (tick.tickMqttSnapshot, tick.tickSesame)
-      void $ arrMCl (display Debug . ("AutoLock: " <>) . T.show) -< result
-      void $ hoistClSF withSesameConfig (arrMCl handleAutoLockEvent) -< result
+      void $ arrMCl (mapM_ (display Debug . renderAutoLockLog) . (.logs)) -< result
+      void $ hoistClSF withSesameConfig (arrMCl handleAutoLockEvent) -< result.events
   mcfg <- constMCl (asks @HomeEnv (.espresense)) -< ()
   case mcfg of
     Nothing -> returnA -< ()

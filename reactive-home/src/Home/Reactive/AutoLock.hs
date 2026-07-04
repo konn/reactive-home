@@ -2,6 +2,7 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DisambiguateRecordFields #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -10,7 +11,10 @@
 
 module Home.Reactive.AutoLock (
   AutoLockEvent (..),
+  AutoLockLog (..),
+  AutoLockOutput (..),
   autolockEventS,
+  renderAutoLockLog,
   handleAutoLockEvent,
 ) where
 
@@ -33,6 +37,21 @@ data AutoLockEvent = AutoLockEvent
   }
   deriving stock (Show, Eq, Ord, Generic)
 
+data AutoLockLog
+  = AutoLockTimerStarted !T.Text !UTCTime
+  | AutoLockTimerCanceled !T.Text
+  | AutoLockTimerKept !T.Text
+  | AutoLockStartDismissed !T.Text
+  | AutoLockFireDismissed !T.Text
+  | AutoLockFired !T.Text
+  deriving stock (Show, Eq, Ord, Generic)
+
+data AutoLockOutput = AutoLockOutput
+  { events :: ![AutoLockEvent]
+  , logs :: ![AutoLockLog]
+  }
+  deriving stock (Show, Eq, Ord, Generic)
+
 data PendingAutoLock = PendingAutoLock
   { device :: !SesameDevice
   , deadline :: !UTCTime
@@ -43,36 +62,73 @@ autolockEventS ::
   ( Reader SesameEnv :> es
   , Time cl ~ UTCTime
   ) =>
-  ClSF (Eff es) cl (MqttSnapshot, Heartbeated SesameStatus) [AutoLockEvent]
+  ClSF (Eff es) cl (MqttSnapshot, Heartbeated SesameStatus) AutoLockOutput
 autolockEventS = feedback HM.empty proc ((mqtt, input), pending) -> do
   TimeInfo {..} <- timeInfo -< ()
   devices <- constMCl (asks @SesameEnv (.devices)) -< ()
-  let pendingEnabled = HM.filter (not . dismissed mqtt . (.device)) pending
-      expired = HM.filter ((<= absolute) . (.deadline)) pendingEnabled
+  let expiredPending = HM.filter ((<= absolute) . (.deadline)) pending
+      expiredEnabled = HM.filter (not . dismissed mqtt . (.device)) expiredPending
+      expiredDismissed = HM.filter (dismissed mqtt . (.device)) expiredPending
       active = HM.filter ((> absolute) . (.deadline)) pending
       expiredEvents =
         [ AutoLockEvent {name, device = item.device}
-        | (name, item) <- HM.toList expired
+        | (name, item) <- HM.toList expiredEnabled
         ]
-  let !(events, pending') =
+      expiredLogs =
+        [ AutoLockFired name
+        | name <- HM.keys expiredEnabled
+        ]
+          <> [ AutoLockFireDismissed name
+             | name <- HM.keys expiredDismissed
+             ]
+      output logs = AutoLockOutput {events = expiredEvents, logs = expiredLogs <> logs}
+      startTimer status device timeout =
+        let deadline = addUTCTime (realToFrac timeout.seconds) absolute
+         in ( output [AutoLockTimerStarted status.name deadline]
+            , HM.insert status.name (PendingAutoLock device deadline) active
+            )
+      dismissStart status =
+        (output [AutoLockStartDismissed status.name], active)
+      cancelTimer status =
+        (output [AutoLockTimerCanceled status.name], HM.delete status.name active)
+      keepTimer status =
+        (output [AutoLockTimerKept status.name], active)
+  let !(result, pending') =
         case input of
-          Heartbeat -> (expiredEvents, active)
+          Heartbeat -> (output [], active)
           Event status
             | HM.member status.name active
             , status.lockCurrentState == LOCKED ->
-                (expiredEvents, HM.delete status.name active)
-            | HM.member status.name active -> (expiredEvents, active)
+                cancelTimer status
+            | HM.member status.name active
+            , status.lockCurrentState == UNLOCKED ->
+                keepTimer status
             | status.lockCurrentState == UNLOCKED
             , Just device <- HM.lookup status.name devices
             , Just timeout <- device.autolock_timeout ->
                 if dismissed mqtt device
-                  then (expiredEvents, active)
-                  else
-                    ( expiredEvents
-                    , HM.insert status.name (PendingAutoLock device (addUTCTime (realToFrac timeout.seconds) absolute)) active
-                    )
-            | otherwise -> (expiredEvents, active)
-  returnA -< (events, pending')
+                  then dismissStart status
+                  else startTimer status device timeout
+            | otherwise -> (output [], active)
+  returnA -< (result, pending')
+
+renderAutoLockLog :: AutoLockLog -> T.Text
+renderAutoLockLog = \case
+  AutoLockTimerStarted name deadline ->
+    "AutoLock timer started: device="
+      <> name
+      <> ", deadline="
+      <> T.pack (show deadline)
+  AutoLockTimerCanceled name ->
+    "AutoLock timer canceled by LOCKED status: device=" <> name
+  AutoLockTimerKept name ->
+    "AutoLock timer kept after repeated UNLOCKED status: device=" <> name
+  AutoLockStartDismissed name ->
+    "AutoLock not started because dismissal switch is on: device=" <> name
+  AutoLockFireDismissed name ->
+    "AutoLock suppressed at deadline because dismissal switch is on: device=" <> name
+  AutoLockFired name ->
+    "AutoLock fired: publishing LOCKED command for device=" <> name
 
 dismissed :: MqttSnapshot -> SesameDevice -> Bool
 dismissed mqtt device =
