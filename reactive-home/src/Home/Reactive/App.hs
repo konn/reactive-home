@@ -38,7 +38,7 @@ import Data.List.NonEmpty qualified as NE
 import Data.Maybe (fromMaybe)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Data.Time (defaultTimeLocale, getZonedTime)
+import Data.Time (defaultTimeLocale, getCurrentTime, getZonedTime)
 import Data.Time.Format (formatTime)
 import Effectful
 import Effectful.Concurrent (Concurrent, runConcurrent, threadDelay)
@@ -60,6 +60,7 @@ import Home.Reactive.ESPresense
 import Home.Reactive.MQTT
 import Home.Reactive.Metrics.Mackerel
 import Home.Reactive.Orphans ()
+import Home.Reactive.ScheduledSwitch
 import Home.Reactive.Sesame5
 import Home.Reactive.Unlock
 import Options.Applicative qualified as Opts
@@ -257,8 +258,11 @@ processHeartbeat ::
   , Console :> es
   , Mqtt :> es
   ) =>
+  [MqttScheduledSwitch] ->
   ClSF (Eff es) (ESPHeartbeatClock es) AppTick ()
-processHeartbeat = proc tick -> do
+processHeartbeat switches = proc tick -> do
+  switchEvents <- scheduledSwitchEventsWithS publishSwitches switches -< ()
+  void $ arrMCl (mapM_ (display Debug . ("Scheduled switch: " <>) . T.show)) -< switchEvents
   sesame <- constMCl (asks @HomeEnv (.sesame)) -< ()
   case sesame of
     Nothing -> returnA -< ()
@@ -285,6 +289,12 @@ processHeartbeat = proc tick -> do
           void $ mapMaybe (arrMCl $ display Debug . ("ESPUnlock: " <>) . T.show) -< result
           void $ mapMaybe (hoistClSF withSesameConfig $ hoistClSF withUnlockConfig $ arrMCl handleUnlockEvent) -< result
 
+publishSwitches :: (Mqtt :> es) => UTCTime -> [ScheduledSwitchEvent] -> Eff es UTCTime
+publishSwitches now [] = pure now
+publishSwitches _ events = do
+  publishScheduledSwitchEvents events
+  unsafeEff_ getCurrentTime
+
 withSesameConfig ::
   (Reader HomeEnv :> es) =>
   Eff (Reader SesameEnv : es) c -> Eff es c
@@ -310,9 +320,10 @@ mainLoop ::
   , Concurrent :> es
   , IOE :> es
   ) =>
+  [MqttScheduledSwitch] ->
   Rhine (Eff es) (AppClock es) () ()
-mainLoop =
-  processMqtt @@ EffMqttClock >-- appBuffer --> processHeartbeat @@ ioClock waitClock
+mainLoop switches =
+  processMqtt @@ EffMqttClock >-- appBuffer --> processHeartbeat switches @@ ioClock waitClock
 
 display :: (Reader HomeEnv :> es, Console :> es) => LogLevel -> T.Text -> Eff es ()
 display level a = do
@@ -335,7 +346,8 @@ application ::
   Eff es ()
 application = do
   initializeESPresense
-  flow mainLoop `concurrently_` reportMackerelMetrics
+  switches <- asks @HomeEnv (foldMap (.scheduled_switches) . (.mqttDevices))
+  flow (mainLoop switches) `concurrently_` reportMackerelMetrics
 
 reportMackerelMetrics ::
   ( Concurrent :> es
@@ -384,6 +396,7 @@ defaultMainWith config = do
         foldMap espresenseTopicFilters config.espresense
           <> foldMap sesameTopicFilters config.sesame
           <> foldMap mqttTopicFilters config.mqtt
+      scheduledTopics = map (fromTopic . (.topic)) $ foldMap (.scheduled_switches) config.mqtt
   case NE.nonEmpty topics of
     Nothing -> putStrLn "No topics to subscribe to; exiting."
     Just ts -> do
@@ -400,7 +413,7 @@ defaultMainWith config = do
                       { topicFilter = topic
                       , retainHandling = SendOnSubscribe
                       , retainAsPublished = False
-                      , noLocal = True
+                      , noLocal = topic `notElem` scheduledTopics
                       , qos = QoS1
                       }
               }

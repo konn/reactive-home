@@ -53,7 +53,6 @@ import Data.Aeson (FromJSON, FromJSONKey, ToJSON, ToJSONKey)
 import Data.Aeson qualified as A
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as LBS
-import Data.Char qualified as C
 import Data.Coerce (coerce)
 import Data.DList.DNonEmpty qualified as DLNE
 import Data.Foldable (find)
@@ -76,11 +75,11 @@ import Effectful.Reader.Static (Reader)
 import FRP.Rhine
 import GHC.Generics (Generic)
 import Home.Reactive.App.Types (ParseResult (..))
+import Home.Reactive.Duration
 import Home.Reactive.MQTT
 import Home.Reactive.Metrics.Mackerel
 import Home.Reactive.Utils (effReaderS)
 import Network.Mqtt.Types.Topic (stripPrefix)
-import Text.Read (readEither)
 import Toml hiding (first, map)
 import Validation (Validation (..))
 
@@ -432,39 +431,6 @@ firstInvalidRoomSensors cfg =
   where
     sensorNames = map (.name) cfg.sensors
 
-newtype Duration = Duration {seconds :: Diff UTCTime}
-  deriving (Eq, Ord, Generic)
-  deriving newtype (Hashable)
-
-instance ToJSON Duration where
-  toEncoding (Duration secs) = A.toEncoding (formatDuration (Duration secs))
-
-instance FromJSON Duration where
-  parseJSON v = do
-    txt <- A.parseJSON v
-    either (fail . T.unpack) pure (parseDuration txt)
-
-millis :: Double -> Duration
-millis ms = Duration (ms / 1000)
-
-seconds :: Double -> Duration
-seconds = Duration
-
-minutes :: Double -> Duration
-minutes m = Duration (m * 60)
-
-hours :: Double -> Duration
-hours h = Duration (h * 3600)
-
-days :: Double -> Duration
-days d = Duration (d * 86400)
-
-instance Show Duration where
-  show (Duration secs) = show secs ++ "s"
-
-instance HasCodec Duration where
-  hasCodec = textBy formatDuration parseDuration
-
 initialiseRooms ::
   (Mqtt :> es) =>
   [ESPDeviceId] ->
@@ -491,31 +457,6 @@ initialiseRoom sensors room = do
   unless (null sensors) $ do
     void $ pub (setTopic "include") (BS8.intercalate " " (map (TE.encodeUtf8 . (.raw)) sensors))
     void $ pub (setTopic "query") (BS8.intercalate " " (map (TE.encodeUtf8 . (.raw)) sensors))
-
-formatDuration :: Duration -> T.Text
-formatDuration (Duration secs)
-  | secs >= 24 * 3600 = T.pack (show $ secs / (24 * 3600)) <> "d"
-  | secs >= 3600 = T.pack (show $ secs / 3600) <> "h"
-  | secs >= 60 = T.pack (show $ secs / 60) <> "m"
-  | secs >= 1 = T.pack (show secs) <> "s"
-  | otherwise = T.pack (show $ secs * 1000) <> "ms"
-
-parseDuration :: T.Text -> Either T.Text Duration
-parseDuration inp = case T.span (\c -> C.isDigit c || c == '.' || c == '_') inp of
-  ("", _) -> Left $ "Invalid duration format: empty string"
-  (numPart, T.strip -> rest) ->
-    case readEither (T.unpack numPart) of
-      Left err -> Left $ "Invalid duration (bare seconds, or real number with suffix ms/s/m/h/d expected): " <> T.pack err
-      Right num ->
-        if T.null rest
-          then Right $ Duration num
-          else case T.toLower rest of
-            "ms" -> Right $ Duration (num / 1000)
-            "s" -> Right $ Duration num
-            "m" -> Right $ Duration (num * 60)
-            "h" -> Right $ Duration (num * 3600)
-            "d" -> Right $ Duration (num * 86400)
-            _ -> Left $ "Invalid duration suffix: expected no suffix (treated as second), or one of ms/s/m/h/d, but got: " <> rest
 
 espresenseTopicFilters :: ESPresenseConfig -> [TopicFilter]
 espresenseTopicFilters ESPresenseConfig {..} =

@@ -35,6 +35,9 @@ families:
   The app defaults to broker-assigned MQTT client identifiers; a stable
   `clientId` is an optional top-level config setting for deployments that need
   one.
+  `mqtt.scheduled_switches` defines recurring switches on the same heartbeat,
+  publishing retained `true`/`false` MQTT states. Their timing and topic contract
+  are documented in `ARCHITECTURES/reactive-home.md`.
 
 ## Dependency Direction
 
@@ -57,6 +60,8 @@ document is updated with a new rationale.
   detailed `hasquitto-core` architecture.
 - `ARCHITECTURES/sesame-bridge.md` - Sesame BLE client, transport, and MQTT
   bridge architecture.
+- `ARCHITECTURES/reactive-home.md` - FRP application clocks and scheduled MQTT
+  switch contract.
 - `hasquitto-core/ARCHITECTURE.md` - detailed hasquitto-core protocol/client
   design.
 

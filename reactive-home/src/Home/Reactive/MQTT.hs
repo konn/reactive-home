@@ -24,6 +24,7 @@ module Home.Reactive.MQTT (
   -- * subscriptions
   mqttTopicFilters,
   MqttDevices (..),
+  MqttScheduledSwitch (..),
 
   -- * Re-exports
   Topic (..),
@@ -40,6 +41,7 @@ module Home.Reactive.MQTT (
 import Control.Exception (Exception, throwIO)
 import Control.Lens ((&), (.~))
 import Data.Aeson (FromJSON, ToJSON)
+import Data.Aeson qualified as A
 import Data.Generics.Labels ()
 import Data.HashMap.Strict (HashMap)
 import Data.HashMap.Strict qualified as HM
@@ -56,17 +58,28 @@ import Effectful.Network.Mqtt qualified as EffM
 import Effectful.Reader.Static (Reader)
 import FRP.Rhine
 import GHC.Generics (Generic)
+import Home.Reactive.Duration (Duration (..))
 import Home.Reactive.Utils (catMaybesS, effReaderS)
-import Network.Mqtt.Client.AutoReconnect
+import Network.Mqtt.Client.AutoReconnect hiding (Success)
 import Toml qualified
+import Validation (Validation (..))
 
 newtype MqttClock = MqttClock AutoClient
   deriving stock (Generic)
   deriving anyclass (GetClockProxy)
 
-data MqttDevices = MqttDevices {switches :: ![MqttSwitch]}
-  deriving (Show, Eq, Ord, Generic, FromJSON, ToJSON)
+data MqttDevices = MqttDevices
+  { switches :: ![MqttSwitch]
+  , scheduled_switches :: ![MqttScheduledSwitch]
+  }
+  deriving (Show, Eq, Ord, Generic, ToJSON)
   deriving (Toml.HasCodec, Toml.HasItemCodec) via Toml.TomlTable MqttDevices
+
+instance FromJSON MqttDevices where
+  parseJSON = A.withObject "MqttDevices" \obj ->
+    MqttDevices
+      <$> obj A..:? "switches" A..!= []
+      <*> obj A..:? "scheduled_switches" A..!= []
 
 data MqttSwitch = MqttSwitch
   { name :: {-# UNPACK #-} !T.Text
@@ -76,6 +89,49 @@ data MqttSwitch = MqttSwitch
   }
   deriving (Show, Eq, Ord, Generic, FromJSON, ToJSON)
   deriving (Toml.HasCodec, Toml.HasItemCodec) via Toml.TomlTable MqttSwitch
+
+data MqttScheduledSwitch = MqttScheduledSwitch
+  { name :: {-# UNPACK #-} !T.Text
+  , topic :: {-# UNPACK #-} !Topic
+  , interval :: !Duration
+  , on_duration :: !Duration
+  }
+  deriving (Show, Eq, Ord, Generic, ToJSON)
+
+instance FromJSON MqttScheduledSwitch where
+  parseJSON value = do
+    switch <- A.genericParseJSON A.defaultOptions value
+    either (fail . T.unpack . snd) pure (validateScheduledSwitch switch)
+
+instance Toml.HasCodec MqttScheduledSwitch where
+  hasCodec = Toml.table scheduledSwitchCodec
+
+instance Toml.HasItemCodec MqttScheduledSwitch where
+  hasItemCodec = Right scheduledSwitchCodec
+
+scheduledSwitchCodec :: Toml.TomlCodec MqttScheduledSwitch
+scheduledSwitchCodec =
+  Toml.Codec
+    { Toml.codecRead = \toml ->
+        case Toml.codecRead baseCodec toml of
+          Failure errors -> Failure errors
+          Success switch ->
+            case validateScheduledSwitch switch of
+              Left (key, message) -> Failure [Toml.BiMapError key (Toml.ArbitraryError message)]
+              Right valid -> Success valid
+    , Toml.codecWrite = Toml.codecWrite baseCodec
+    }
+  where
+    baseCodec = Toml.genericCodec @MqttScheduledSwitch
+
+validateScheduledSwitch :: MqttScheduledSwitch -> Either (Toml.Key, T.Text) MqttScheduledSwitch
+validateScheduledSwitch switch
+  | not (positiveFinite switch.interval) = Left ("interval", "interval must be a finite, positive duration")
+  | not (positiveFinite switch.on_duration) = Left ("on_duration", "on_duration must be a finite, positive duration")
+  | switch.on_duration >= switch.interval = Left ("on_duration", "on_duration must be shorter than interval")
+  | otherwise = Right switch
+  where
+    positiveFinite (Duration secs) = secs > 0 && not (isNaN secs || isInfinite secs)
 
 data MqttSnapshot = MqttSnapshot {switches :: HashMap T.Text Bool}
   deriving (Show, Eq, Ord, Generic)
@@ -88,7 +144,7 @@ mqttSnapshotS = effReaderS @MqttDevices proc (msg, devices) -> do
     parallely
       (proc (msg, sw) -> switchStateS -< (sw, msg))
       -<
-        HM.fromList [(sw.name, (msg, sw)) | sw <- devices.switches]
+        HM.fromList [(sw.name, (msg, sw)) | sw <- observedSwitches devices]
   returnA -< MqttSnapshot {..}
 
 switchStateS ::
@@ -109,7 +165,14 @@ switchStateS =
           else Nothing
 
 mqttTopicFilters :: MqttDevices -> [TopicFilter]
-mqttTopicFilters MqttDevices {..} = map (fromTopic . (.topic)) switches
+mqttTopicFilters = map (fromTopic . (.topic)) . observedSwitches
+
+observedSwitches :: MqttDevices -> [MqttSwitch]
+observedSwitches devices =
+  devices.switches
+    <> [ MqttSwitch {name = sw.name, topic = sw.topic, onValue = Nothing, offValue = Nothing}
+       | sw <- devices.scheduled_switches
+       ]
 
 newMqttClock :: MqttClient -> MqttClock
 {-# INLINE newMqttClock #-}

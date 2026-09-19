@@ -60,10 +60,12 @@ library
     Home.Reactive.App
     Home.Reactive.App.Types
     Home.Reactive.AutoLock
+    Home.Reactive.Duration
     Home.Reactive.ESPresense
     Home.Reactive.MQTT
     Home.Reactive.Metrics.Mackerel
     Home.Reactive.Orphans
+    Home.Reactive.ScheduledSwitch
     Home.Reactive.Sesame5
     Home.Reactive.Unlock
     Home.Reactive.Utils
@@ -122,6 +124,7 @@ test-suite reactive-home-test
     Home.Reactive.AppTest
     Home.Reactive.AutoLockTest
     Home.Reactive.ESPresenseTest
+    Home.Reactive.ScheduledSwitchTest
 
   build-tool-depends:
     tasty-discover:tasty-discover
@@ -133,7 +136,10 @@ test-suite reactive-home-test
     -with-rtsopts=-N
 
   build-depends:
+    aeson,
+    bytestring,
     effectful,
+    hasquitto-effectful,
     reactive-home,
     rhine,
     tasty,
