@@ -96,6 +96,24 @@ live under `ARCHITECTURES/`; update the relevant document in the same change whe
 package boundaries, concurrency models, protocol recovery, retry semantics, topic/payload
 contracts, or public configuration surfaces.
 
+### BLE backend support
+
+- Production `reactive-home` runs on Raspberry Pi Linux with **BlueZ**, without
+  SimpleBLE installed. Every new BLE library and BLE feature must support both
+  **BlueZ** and **SimpleBLE**; checking only the development machine's backend
+  is insufficient.
+- Follow the `haskesame-*` structure: keep protocol types and wire parsing in a
+  backend-independent core library, put BlueZ and SimpleBLE adapters in separate
+  libraries, and make application code consume those libraries.
+- The default Linux application build must use BlueZ without requiring SimpleBLE
+  headers, native libraries, or runtime installation. Keep the SimpleBLE route
+  available for supported development/deployment platforms, and document backend
+  selection and platform requirements.
+- Validate shared packet fixtures and both adapter paths when adding or changing
+  BLE behavior. Include build/dependency checks for the Linux BlueZ route and
+  tests for backend-specific advertisement and freshness behavior. State clearly
+  when physical hardware validation for a backend was unavailable.
+
 ### hasquitto-core
 Read `hasquitto-core/ARCHITECTURE.md` before touching the codec or client engine. In brief:
 four layers, each importing only from those above it —
