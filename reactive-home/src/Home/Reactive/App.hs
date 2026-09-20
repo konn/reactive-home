@@ -22,6 +22,9 @@ module Home.Reactive.App (
 ) where
 
 import Control.Applicative ((<**>))
+import Control.Concurrent qualified as Thread
+import Control.Concurrent.Async qualified as Async
+import Control.Concurrent.STM qualified as STM
 import Control.Exception (throwIO)
 import Control.Exception.Safe (SomeException, handleAny)
 import Control.Exception.Safe qualified as E
@@ -31,11 +34,10 @@ import Control.Monad qualified as M
 import Control.Monad.Fix (fix)
 import Control.Monad.Trans.Class (lift)
 import Data.Aeson qualified as A
-import Data.Functor (void, (<&>))
+import Data.Functor (void)
 import Data.Generics.Labels ()
 import Data.HashMap.Strict qualified as HM
-import Data.List.NonEmpty qualified as NE
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time (defaultTimeLocale, getCurrentTime, getZonedTime)
@@ -58,18 +60,21 @@ import Home.Reactive.App.Types (ParseResult (..))
 import Home.Reactive.AutoLock
 import Home.Reactive.ESPresense
 import Home.Reactive.MQTT
+import Home.Reactive.Metrics.Hometrics (HometricsConfig (..))
 import Home.Reactive.Metrics.Mackerel
 import Home.Reactive.Orphans ()
 import Home.Reactive.ScheduledSwitch
 import Home.Reactive.Sesame5
+import Home.Reactive.SwitchBot
+import Home.Reactive.SwitchBot.Runtime (runSwitchBot)
 import Home.Reactive.Unlock
 import Options.Applicative qualified as Opts
 import System.Random (randomRIO)
 import Toml hiding (first, map)
 
 data Config = Config
-  { host :: !T.Text
-  , port :: !Int
+  { host :: !(Maybe T.Text)
+  , port :: !(Maybe Int)
   , clientId :: !(Maybe T.Text)
   , user :: !(Maybe T.Text)
   , password :: !(Maybe T.Text)
@@ -79,6 +84,8 @@ data Config = Config
   , unlock :: !(Maybe UnlockConfig)
   , logLevel :: !(Maybe LogLevel)
   , mqtt :: !(Maybe MqttDevices)
+  , switchbot :: !(Maybe SwitchBotConfig)
+  , hometrics :: !(Maybe HometricsConfig)
   }
   deriving (Show, Eq, Ord, Generic)
   deriving (HasCodec) via TomlTable Config
@@ -392,50 +399,77 @@ initializeESPresense = do
 
 defaultMainWith :: Config -> IO ()
 defaultMainWith config = do
-  let !topics =
+  let topics =
         foldMap espresenseTopicFilters config.espresense
           <> foldMap sesameTopicFilters config.sesame
           <> foldMap mqttTopicFilters config.mqtt
       scheduledTopics = map (fromTopic . (.topic)) $ foldMap (.scheduled_switches) config.mqtt
-  case NE.nonEmpty topics of
-    Nothing -> putStrLn "No topics to subscribe to; exiting."
-    Just ts -> do
-      let !mqttCfg =
+      needsMqtt = not (null topics) || maybe False (not . null . mqttRelayTopics) config.switchbot
+  mqttCfg <-
+    if not needsMqtt
+      then pure Nothing
+      else do
+        brokerHost <- maybe (throwIO $ userError "host is required when MQTT is enabled") pure config.host
+        pure $
+          Just
             MqttClockConfig
-              { host = T.unpack $ host config
-              , port = port config
-              , user = user config
-              , password = password config
+              { host = T.unpack brokerHost
+              , port = fromMaybe 1883 config.port
+              , user = config.user
+              , password = config.password
               , clientId = fromMaybe "" config.clientId
               , subscriptions =
-                  ts <&> \topic ->
-                    Subscription
+                  [ Subscription
                       { topicFilter = topic
                       , retainHandling = SendOnSubscribe
                       , retainAsPublished = False
                       , noLocal = topic `notElem` scheduledTopics
                       , qos = QoS1
                       }
+                  | topic <- topics
+                  ]
               }
-      let sesame = fromSesameConfig <$> config.sesame
-          espresense = config.espresense
-          mackerel = config.mackerel
-          unlock = config.unlock
-          mqttDevices = config.mqtt
-          logLevel = fromMaybe Info config.logLevel
-      handleAny report $ withMqttClient mqttCfg \mqtt sess ->
+  -- Start BLE before waiting for the MQTT connection. The optional relay waits
+  -- for this shared session only in its own delivery worker.
+  session <- STM.newEmptyTMVarIO
+  let sensors = forM_ config.switchbot $ \sc ->
         runEff $
-          runConsole $
-            runConcurrent $ do
+          runConcurrent $
+            runSwitchBot
+              sc
+              config.hometrics
+              ( if null $ mqttRelayTopics sc
+                  then Nothing
+                  else Just $ \samples -> do
+                    (mqtt, sess) <- liftIO $ STM.atomically $ STM.readTMVar session
+                    runMqttWith mqtt sess $ publishSensorSamples sc samples
+              )
+              (liftIO . putStrLn . T.unpack)
+              (\update -> if fromMaybe Info config.logLevel == Debug then liftIO $ print update else pure ())
+      mqttApp = forM_ mqttCfg $ \cfg -> withMqttClient cfg $ \mqtt sess ->
+        E.bracket_
+          (STM.atomically $ STM.putTMVar session (mqtt, sess))
+          (STM.atomically $ STM.takeTMVar session)
+          $ do
+            let sesame = fromSesameConfig <$> config.sesame
+                espresense = config.espresense
+                mackerel = config.mackerel
+                unlock = config.unlock
+                mqttDevices = config.mqtt
+                logLevel = fromMaybe Info config.logLevel
+            runEff $ runConsole $ runConcurrent $ do
               mackerelMetricsQueue <- newTQueueIO
-              runReader HomeEnv {..} $
-                runWreq $
-                  runMqttWith mqtt sess application
+              runReader HomeEnv {..} $ runWreq $ runMqttWith mqtt sess application
+  let supervisedMqtt =
+        E.handleAny
+          (\err -> report err >> Thread.threadDelay 5000000 >> supervisedMqtt)
+          mqttApp
+  handleAny report $ Async.concurrently_ sensors $ if isJust config.switchbot then supervisedMqtt else mqttApp
 
 report :: SomeException -> IO ()
 report exc = do
   now <- getZonedTime
-  putStrLn $ "[" ++ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S %Z" now ++ "] ERR: An error occurred: " ++ show exc
+  putStrLn $ "[" <> formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S %Z" now <> "] ERR: An error occurred: " <> show exc
 
 defaultMain :: IO ()
 defaultMain = do

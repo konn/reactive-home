@@ -25,8 +25,8 @@ test_configParsing =
         decodeExact (genericCodec @Config) withoutClientIdToml
           @?= Right
             Config
-              { host = "localhost"
-              , port = 1883
+              { host = Just "localhost"
+              , port = Just 1883
               , clientId = Nothing
               , user = Nothing
               , password = Nothing
@@ -36,6 +36,8 @@ test_configParsing =
               , unlock = Nothing
               , logLevel = Nothing
               , mqtt = Nothing
+              , switchbot = Nothing
+              , hometrics = Nothing
               }
     , testCase "clientId preserves explicit stable client identifiers" $
         (.clientId) <$> decodeExact (genericCodec @Config) withClientIdToml

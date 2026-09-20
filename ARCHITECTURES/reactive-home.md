@@ -7,6 +7,18 @@ switch snapshot into the heartbeat stage, which drives expiry, autolock, room
 unlock rules, and scheduled switches. Mackerel reporting runs concurrently with
 this network.
 
+An optional SwitchBot sensor network runs alongside this MQTT network on its own
+finite-scan Rhine clock. It starts even while the broker is connecting. Its
+named readings and expiring snapshots feed independent local Hometrics REST and
+optional MQTT relay workers. Each sensor may select its Hometrics device name
+and measurement fields without changing its Rhine identity or readings; see
+[SwitchBot sensors](switchbot.md) for the full
+contract. MQTT relay is enabled per sensor with `mqtt_topic`. `host` is required
+only when MQTT inputs or at least one sensor relay are enabled; `port` defaults
+to 1883. A sensor-only configuration without relays does not initialize
+an MQTT client. MQTT clients can also start with no subscriptions when used only
+for relaying sensor data.
+
 ## Scheduled MQTT Switches
 
 `Home.Reactive.MQTT.MqttDevices` accepts optional `switches` and

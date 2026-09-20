@@ -6,7 +6,7 @@ notes under `ARCHITECTURES/`.
 
 ## Package Families
 
-`reactive-home` is a Cabal monorepo. The packages currently fall into three
+`reactive-home` is a Cabal monorepo. The packages currently fall into four
 families:
 
 - **MQTT (`hasquitto-*`)**: a low-level MQTT v5 client, automatic reconnect
@@ -38,6 +38,11 @@ families:
   `mqtt.scheduled_switches` defines recurring switches on the same heartbeat,
   publishing retained `true`/`false` MQTT states. Their timing and topic contract
   are documented in `ARCHITECTURES/reactive-home.md`.
+- **SwitchBot sensors (`switchbot-core`, `switchbot-bluez`, `switchbot-simpleble`)**: pure BLE
+  advertisement decoding and BlueZ/SimpleBLE scanners for Hub 2, Meter Pro CO₂ and
+  Indoor/Outdoor Meter. A separate Rhine sensor clock supplies named, timestamped
+  readings and expiring snapshots, with local Hometrics REST delivery and an
+  optional MQTT relay. See `ARCHITECTURES/switchbot.md`.
 
 ## Dependency Direction
 
@@ -51,6 +56,12 @@ applications:
 4. The FRP layer can consume the MQTT-facing surfaces without depending on BLE
    transport internals.
 
+The SwitchBot FRP vocabulary depends on the pure decoder; its runtime adapter
+selects BlueZ on Linux by default and SimpleBLE on other platforms. Both backends
+scan broadcasts without a GATT session. It runs independently of MQTT, which is
+an optional output for sensors. The default Linux dependency path excludes
+SimpleBLE, including on Raspberry Pi.
+
 Design changes should preserve these boundaries unless the relevant architecture
 document is updated with a new rationale.
 
@@ -62,6 +73,8 @@ document is updated with a new rationale.
   bridge architecture.
 - `ARCHITECTURES/reactive-home.md` - FRP application clocks and scheduled MQTT
   switch contract.
+- `ARCHITECTURES/switchbot.md` - BLE sensor formats, Rhine integration, TOML,
+  freshness, Hometrics REST delivery and optional MQTT relay.
 - `hasquitto-core/ARCHITECTURE.md` - detailed hasquitto-core protocol/client
   design.
 

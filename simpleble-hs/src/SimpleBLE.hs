@@ -283,7 +283,7 @@ bluetoothEnabled =
 getAdapters :: IO [Adapter]
 getAdapters = do
   count <- [C.exp| size_t { simpleble_hs_adapters_count() } |]
-  forM [0 .. count - 1] \index -> do
+  forM (takeWhile (< count) [0 ..]) \index -> do
     ptr <- [C.exp| void* { simpleble_hs_adapter_get($(size_t index)) } |]
     newAdapter ptr
 
@@ -306,7 +306,7 @@ adapterScanGetResults :: Adapter -> IO [Peripheral]
 adapterScanGetResults adapter =
   withAdapter adapter \ptr -> do
     count <- [C.exp| size_t { simpleble_hs_adapter_scan_results_count($(void* ptr)) } |]
-    forM [0 .. count - 1] \index -> do
+    forM (takeWhile (< count) [0 ..]) \index -> do
       peripheral <- [C.exp| void* { simpleble_hs_adapter_scan_result_get($(void* ptr), $(size_t index)) } |]
       newPeripheral peripheral
 
@@ -345,7 +345,7 @@ peripheralServices peripheral =
       \servicesFp ->
         withForeignPtr servicesFp \servicesPtr -> do
           count <- [C.exp| size_t { simpleble_hs_services_count($(void* servicesPtr)) } |]
-          forM [0 .. count - 1] (readService servicesPtr)
+          forM (takeWhile (< count) [0 ..]) (readService servicesPtr)
 
 peripheralManufacturerData :: Peripheral -> IO [ManufacturerData]
 peripheralManufacturerData peripheral =
@@ -356,7 +356,7 @@ peripheralManufacturerData peripheral =
       \manufacturerDataFp ->
         withForeignPtr manufacturerDataFp \manufacturerDataPtr -> do
           count <- [C.exp| size_t { simpleble_hs_manufacturer_data_count($(void* manufacturerDataPtr)) } |]
-          forM [0 .. count - 1] (readManufacturerData manufacturerDataPtr)
+          forM (takeWhile (< count) [0 ..]) (readManufacturerData manufacturerDataPtr)
 
 peripheralWriteRequest :: Peripheral -> Text -> Text -> ByteString -> IO ()
 peripheralWriteRequest peripheral service characteristic payload =
@@ -410,7 +410,7 @@ readService servicesPtr index = do
       \characteristicsFp ->
         withForeignPtr characteristicsFp \characteristicsPtr -> do
           count <- [C.exp| size_t { simpleble_hs_characteristics_count($(void* characteristicsPtr)) } |]
-          forM [0 .. count - 1] (readCharacteristic characteristicsPtr)
+          forM (takeWhile (< count) [0 ..]) (readCharacteristic characteristicsPtr)
   pure Service {..}
 
 readCharacteristic :: Ptr () -> CSize -> IO Characteristic

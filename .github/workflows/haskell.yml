@@ -68,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y libdbus-1-dev pkg-config unzip
+          sudo apt-get install -y dbus-daemon libdbus-1-dev pkg-config unzip
           curl -fsSL \
             "https://github.com/simpleble/simpleble/releases/download/v${SIMPLEBLE_VERSION}/libsimpleble_linux-aarch64.zip" \
             -o /tmp/libsimpleble_linux-aarch64.zip
@@ -105,6 +105,13 @@ jobs:
       - name: Build All
         run: |
           ${{env.cabal}} build all
+      - name: Verify both reactive-home BLE backends
+        run: |
+          python3 ci/scripts/check-reactive-home-ble-plan.py --backend bluez
+          ${{env.cabal}} build reactive-home -fsimpleble
+          python3 ci/scripts/check-reactive-home-ble-plan.py --backend simpleble
+          ${{env.cabal}} build all -f-simpleble
+          python3 ci/scripts/check-reactive-home-ble-plan.py --backend bluez
       - name: Save dist-newstyle Cache
         uses: actions/cache/save@v5
         with:
@@ -174,7 +181,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y libdbus-1-dev pkg-config unzip
+          sudo apt-get install -y dbus-daemon libdbus-1-dev pkg-config unzip
           curl -fsSL \
             "https://github.com/simpleble/simpleble/releases/download/v${SIMPLEBLE_VERSION}/libsimpleble_linux-aarch64.zip" \
             -o /tmp/libsimpleble_linux-aarch64.zip

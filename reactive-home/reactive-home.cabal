@@ -17,6 +17,7 @@ data-dir: data
 extra-doc-files:
   CHANGELOG.md
   README.md
+  switchbot.example.toml
 
 source-repository head
   type: git
@@ -51,6 +52,11 @@ common defaults
     TypeFamilies
     TypeOperators
 
+flag simpleble
+  description: Use SimpleBLE instead of BlueZ on Linux (other platforms use SimpleBLE by default).
+  default: False
+  manual: True
+
 library
   import: defaults
   hs-source-dirs: src
@@ -63,10 +69,14 @@ library
     Home.Reactive.Duration
     Home.Reactive.ESPresense
     Home.Reactive.MQTT
+    Home.Reactive.Metrics.Hometrics
     Home.Reactive.Metrics.Mackerel
     Home.Reactive.Orphans
     Home.Reactive.ScheduledSwitch
+    Home.Reactive.Sensor
     Home.Reactive.Sesame5
+    Home.Reactive.SwitchBot
+    Home.Reactive.SwitchBot.Runtime
     Home.Reactive.Unlock
     Home.Reactive.Utils
 
@@ -74,6 +84,7 @@ library
   other-modules:
   build-depends:
     aeson,
+    async,
     bytestring,
     containers,
     dlist,
@@ -83,6 +94,9 @@ library
     hasquitto-auto-reconnect,
     hasquitto-core,
     hasquitto-effectful,
+    http-client,
+    http-client-tls,
+    http-types,
     lens,
     monad-schedule,
     monoidal-containers,
@@ -91,7 +105,8 @@ library
     random,
     rhine,
     safe-exceptions,
-    stm-containers,
+    stm,
+    switchbot-core,
     text,
     time,
     tomland,
@@ -99,6 +114,12 @@ library
     unordered-containers,
     validation-selective,
     wreq-effectful,
+
+  if os(linux) && !flag(simpleble)
+    cpp-options: -DSWITCHBOT_BLUEZ
+    build-depends: switchbot-bluez
+  else
+    build-depends: switchbot-simpleble
 
 executable reactive-home
   import: defaults
@@ -124,7 +145,9 @@ test-suite reactive-home-test
     Home.Reactive.AppTest
     Home.Reactive.AutoLockTest
     Home.Reactive.ESPresenseTest
+    Home.Reactive.Metrics.HometricsTest
     Home.Reactive.ScheduledSwitchTest
+    Home.Reactive.SwitchBotTest
 
   build-tool-depends:
     tasty-discover:tasty-discover
@@ -138,10 +161,14 @@ test-suite reactive-home-test
   build-depends:
     aeson,
     bytestring,
+    containers,
     effectful,
     hasquitto-effectful,
+    http-client,
+    http-types,
     reactive-home,
     rhine,
+    switchbot-core,
     tasty,
     tasty-hunit,
     text,
@@ -149,3 +176,5 @@ test-suite reactive-home-test
     tomland,
     transformers,
     unordered-containers,
+    wai,
+    warp,

@@ -101,6 +101,11 @@ are unresolved. The transport therefore:
 The SimpleBLE transport implements the same record for systems where SimpleBLE is
 the preferred BLE backend.
 
+The shared `simpleble-hs` binding also supports the advertisement-only SwitchBot
+scanner. Its collection enumeration handles empty results without unsigned
+count underflow, including advertised services with no GATT characteristics.
+SwitchBot scanning does not connect to or issue commands to Sesame devices.
+
 ## MQTT Contract
 
 The MQTT bridge exposes an `ssm2mqtt`-compatible topic shape:

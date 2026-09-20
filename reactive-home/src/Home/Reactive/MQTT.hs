@@ -212,7 +212,7 @@ data MqttClockConfig = MqttClockConfig
   , user :: !(Maybe T.Text)
   , password :: !(Maybe T.Text)
   , clientId :: !T.Text
-  , subscriptions :: !(NonEmpty Subscription)
+  , subscriptions :: ![Subscription]
   }
   deriving (Show, Eq, Generic)
 
@@ -237,11 +237,11 @@ withMqttClient config k = do
     )
     defaultAutoReconnectConfig
     \client session -> do
-      reasons <- subscribe client config.subscriptions []
-      let !failures =
-            NE.nonEmpty $
-              NE.filter (\(_, reason) -> not $ isSuccess reason) $
-                NE.zip config.subscriptions reasons
+      failures <- case NE.nonEmpty config.subscriptions of
+        Nothing -> pure Nothing
+        Just requestedSubscriptions -> do
+          reasons <- subscribe client requestedSubscriptions []
+          pure $ NE.nonEmpty $ NE.filter (\(_, reason) -> not $ isSuccess reason) $ NE.zip requestedSubscriptions reasons
       case failures of
         Just errors -> throwIO $ SubscriptionFailed errors
         Nothing -> k client session

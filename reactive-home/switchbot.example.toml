@@ -1,0 +1,30 @@
+# No MQTT settings are needed when using BLE and local Hometrics only.
+# For per-sensor MQTT relays, uncomment the shared broker settings here:
+# host = "localhost"
+# port = 1883
+
+[hometrics]
+endpoint = "http://localhost:8080/temperatures"
+
+[switchbot]
+# scan_window = "5s"
+# report_interval = "1m"
+# stale_after = "2m"
+# adapter = "adapter identifier or address"
+
+# Discover IDs with `cabal run switchbot-scan-bluez` on Raspberry Pi/Linux,
+# or `cabal run switchbot-scan` on SimpleBLE/macOS. Replace these example IDs.
+[switchbot.sensors]
+hub2 = "AA:BB:CC:DD:EE:01"
+co2 = "AA:BB:CC:DD:EE:02"
+outdoor = "AA:BB:CC:DD:EE:03"
+
+# To relay an individual sensor, replace its line with e.g.:
+# co2 = { id = "AA:BB:CC:DD:EE:02", mqtt_topic = "switchbot/co2/state" }
+# outdoor = { id = "AA:BB:CC:DD:EE:03", mqtt_topic = "garden/climate" }
+# Sensors without mqtt_topic still feed Rhine and Hometrics.
+
+# Hometrics name and fields are also per sensor. For example, replace co2 with:
+# co2 = { id = "AA:BB:CC:DD:EE:02", mqtt_topic = "switchbot/co2/state", hometrics_name = "living-room", hometrics_fields = ["co2"] }
+# Supported fields: "temperature", "humidity", "co2". Use hometrics_fields = [] to opt out.
+# Omitted hometrics_name uses the sensor key; omitted hometrics_fields sends all available.
