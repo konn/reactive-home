@@ -87,6 +87,17 @@ cancellation clean up owned matches, discovery and the connection. Normal cleanu
 releases only this client's discovery session. All D-Bus calls have five-second
 deadlines. See the [BlueZ adapter API](https://bluez.readthedocs.io/en/latest/adapter-api/).
 
+`Discovering = true` alone does not prove that advertisements are arriving. A
+monotonic watchdog renews the discovery session after 60 seconds without any
+advertising activity on the selected adapter. Manufacturer, service, advertising
+data and RSSI updates from any advertiser count as activity; cached objects,
+connection/GATT changes and another adapter's traffic do not. Activity tracking
+is independent of measurement freshness. Renewal releases this client's session
+and cache, and the next scan opens a fresh connection. It throws
+`DiscoverySilence`, which does not qualify for an adapter power cycle. The timer
+resets on activity or renewal, so even a genuinely quiet room renews at most
+once per minute. This also works with `bluez_recovery = false`.
+
 The runtime supervisor reports transitions with `SwitchBot scanner unhealthy`
 and `SwitchBot scanner healthy again`, and repeats unresolved errors at most once
 per minute. Failure yields an empty tick after a scan-window delay, keeping stale
@@ -95,7 +106,9 @@ On Linux, 60 seconds of consecutive `StartDiscovery` InProgress/Failed errors or
 unexpectedly stopped discovery triggers a power cycle of the selected adapter
 through `Adapter1.Powered`. Attempts, including failed attempts, are separated by
 at least five minutes. A successful scan resets the failure streak but preserves
-the cooldown. Power-on is attempted in a finalizer even if power-off fails or
+the cooldown; after a failure, `healthy again` is logged only when actual sensor
+readings resume, never merely for an empty successful window. Power-on is
+attempted in a finalizer even if power-off fails or
 recovery is cancelled. Permission errors, absent/manually powered-off adapters,
 configuration errors and radio silence do not trigger adapter resets.
 
@@ -116,10 +129,20 @@ at onset, but the exact trigger was not captured. Persistent discovery reduces
 start/stop transitions; the adapter reset handles sustained discovery failures
 rather than assuming reconnecting a client can clear them.
 
+A later recurrence that afternoon left both `Powered` and `Discovering` true,
+with no D-Bus advertisement signals and no scan errors. Restarting only
+reactive-home restored all three sensors immediately. The error-only supervisor
+could not detect this silent session stall; the activity watchdog covers that
+case without resetting the shared adapter. The underlying BlueZ/controller
+trigger remains unconfirmed.
+
 Hardware-independent tests replay advertisements and exercise persistent windows,
-Busy failures, daemon replacement, cancellation, permission failures and power
-recovery against a private D-Bus service. The shared supervisor tests recovery
-thresholds, cooldowns, healthy silence and cancellation for both backend policies.
+Busy failures, silent discovery with healthy adapter flags, session renewal,
+daemon replacement, cancellation, permission failures and power recovery against
+a private D-Bus service. An injected monotonic clock verifies inactivity timing
+and quiet-room renewal limits. The shared supervisor tests recovery thresholds,
+cooldowns, health logging after empty windows and cancellation for both backend
+policies.
 
 Each SimpleBLE process should own its scanner adapter. SimpleBLE's adapter scan controls
 are shared: callers embedding this scanner alongside another scanner in the

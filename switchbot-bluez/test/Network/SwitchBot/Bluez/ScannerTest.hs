@@ -2,10 +2,12 @@ module Network.SwitchBot.Bluez.ScannerTest (test_persistentScanner) where
 
 import Control.Concurrent (forkIO, killThread, newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, bracket, throwIO, try)
+import Control.Exception (SomeException, bracket, fromException, throwIO, try)
 import Control.Monad (unless, void, when)
 import DBus
 import DBus.Client qualified as DBus
+import Data.IORef
+import Data.Int (Int16)
 import Data.Map.Strict qualified as Map
 import Network.SwitchBot.Advertisement
 import Network.SwitchBot.Bluez
@@ -111,6 +113,13 @@ expectFailure recoverable action = do
     Right _ -> assertFailure "expected a scan failure"
     Left err -> isDiscoveryFailure err @?= recoverable
 
+expectSilence :: IO a -> IO ()
+expectSilence action = do
+  result <- try @SomeException action
+  case result of
+    Left err | Just DiscoverySilence <- fromException err -> isDiscoveryFailure err @?= False
+    _ -> assertFailure "expected silence to renew the session without qualifying for an adapter reset"
+
 test_persistentScanner :: TestTree
 test_persistentScanner =
   testGroup
@@ -126,6 +135,58 @@ test_persistentScanner =
           readTVarIO mock.starts >>= (@?= 1)
           readTVarIO mock.stops >>= (@?= 0)
         readTVarIO mock.stops >>= (@?= 1)
+    , testCase "silent discovery renews even while Powered and Discovering remain true" $ withMock $ \mock -> do
+        clock <- newIORef 0
+        atomically $ writeTVar mock.emitReadings False
+        withScannerWithClientAndClock mock.client (readIORef clock) Nothing (const $ pure ()) $ \scan -> do
+          scan 20 >>= (@?= [])
+          writeIORef clock 59
+          scan 20 >>= (@?= [])
+          readTVarIO mock.powered >>= (@?= True)
+          readTVarIO mock.discovering >>= (@?= True)
+          writeIORef clock 60
+          expectSilence $ scan 20
+          readTVarIO mock.stops >>= (@?= 1)
+          atomically $ writeTVar mock.emitReadings True
+          writeIORef clock 61
+          scan 50 >>= \readings -> map (.co2Ppm) readings @?= [Just 584]
+          readTVarIO mock.starts >>= (@?= 2)
+          -- Activity postpones the next renewal; an empty window does not.
+          writeIORef clock 120
+          scan 20 >>= (@?= [])
+          writeIORef clock 121
+          expectSilence $ scan 20
+          readTVarIO mock.powerCalls >>= (@?= [])
+    , testCase "a quiet room renews at most once per minute without replaying cached data" $ withMock $ \mock -> do
+        clock <- newIORef 0
+        atomically $ writeTVar mock.emitReadings False
+        withScannerWithClientAndClock mock.client (readIORef clock) Nothing (const $ pure ()) $ \scan -> do
+          scan 20 >>= (@?= [])
+          writeIORef clock 60
+          expectSilence $ scan 20
+          writeIORef clock 65
+          scan 20 >>= (@?= [])
+          writeIORef clock 119
+          scan 20 >>= (@?= [])
+          readTVarIO mock.starts >>= (@?= 2)
+          readTVarIO mock.stops >>= (@?= 1)
+          writeIORef clock 120
+          expectSilence $ scan 20
+          readTVarIO mock.stops >>= (@?= 2)
+          readTVarIO mock.powerCalls >>= (@?= [])
+    , testCase "another advertiser keeps discovery live without refreshing SwitchBot readings" $ withMock $ \mock -> do
+        clock <- newIORef 0
+        atomically $ writeTVar mock.emitReadings False
+        withScannerWithClientAndClock mock.client (readIORef clock) Nothing (const $ pure ()) $ \scan -> do
+          scan 20 >>= (@?= [])
+          writeIORef clock 59
+          DBus.emit mock.server $ changed "/org/bluez/hci0/dev_11_22_33_44_55_66" (Map.singleton "RSSI" $ toVariant (-50 :: Int16)) []
+          scan 50 >>= (@?= [])
+          writeIORef clock 118
+          scan 20 >>= (@?= [])
+          readTVarIO mock.starts >>= (@?= 1)
+          writeIORef clock 119
+          expectSilence $ scan 20
     , testCase "lost discovery is detected and starts a fresh session" $ withMock $ \mock ->
         withScannerWithClient mock.client Nothing assertFailure $ \scan -> do
           void $ scan 20

@@ -9,6 +9,7 @@ module Network.SwitchBot.Bluez.Advertisement (
   collectSignal,
   scanResults,
   scanErrors,
+  scanHasActivity,
 ) where
 
 import Control.Applicative ((<|>))
@@ -35,6 +36,7 @@ data ScanState = ScanState
   , seenManufacturer :: !(Set ObjectPath)
   , readings :: !(Map ObjectPath SensorReading)
   , errors :: !(Map ObjectPath DecodeError)
+  , advertisingActivity :: !Bool
   }
 
 initialScan :: ObjectPath -> ManagedObjects -> ScanState
@@ -44,18 +46,25 @@ initialScan adapter objects =
     Set.empty
     Map.empty
     Map.empty
+    False
 
 {- | Keep device metadata, but require a new manufacturer advertisement in each
 window. Cached measurements must never acquire a new observation timestamp.
 -}
 nextScanWindow :: ScanState -> ScanState
-nextScanWindow state = state {seenManufacturer = Set.empty, readings = Map.empty, errors = Map.empty}
+nextScanWindow state = state {seenManufacturer = Set.empty, readings = Map.empty, errors = Map.empty, advertisingActivity = False}
 
 scanResults :: ScanState -> [SensorReading]
 scanResults = Map.elems . (.readings)
 
 scanErrors :: ScanState -> [DecodeError]
 scanErrors = Map.elems . (.errors)
+
+{- | Activity from any advertiser on the selected adapter, independently of
+SwitchBot decoding. Connection/GATT state changes are not advertising traffic.
+-}
+scanHasActivity :: ScanState -> Bool
+scanHasActivity = (.advertisingActivity)
 
 collectSignal :: ObjectPath -> Signal -> ScanState -> ScanState
 collectSignal adapter event state
@@ -101,6 +110,9 @@ collectSignal adapter event state
                   , seenManufacturer = seen
                   , readings = Map.delete path state.readings
                   , errors = Map.delete path state.errors
+                  , advertisingActivity =
+                      state.advertisingActivity
+                        || any (`Map.member` changed) ["ManufacturerData", "ServiceData", "RSSI", "AdvertisingData"]
                   }
            in if Set.notMember path seen
                 then next

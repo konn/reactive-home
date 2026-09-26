@@ -13,6 +13,12 @@ session across sampling windows. Its scan action takes a window length in
 milliseconds. Failed reads release the session; the next call reconnects and
 clears the old cache. `scanSensors` retains the one-shot API.
 
+If no advertising activity arrives for 60 seconds, even with `Discovering = true`,
+the scan throws `DiscoverySilence` and releases its session. The next call opens
+a new session. Any advertiser on the selected adapter can keep discovery live;
+cached objects and GATT state changes cannot. A quiet room causes at most one
+renewal per minute. Silence never qualifies for an adapter power cycle.
+
 Discovery sessions use `Transport = le` and `DuplicateData = true`.
 Only fresh manufacturer advertisements in the current window produce readings;
 cached BlueZ device objects alone never refresh sensor timestamps. Partial

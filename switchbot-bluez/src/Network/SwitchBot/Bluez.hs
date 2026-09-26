@@ -4,6 +4,8 @@ module Network.SwitchBot.Bluez (
   scanSensorsWithClient,
   withScanner,
   withScannerWithClient,
+  withScannerWithClientAndClock,
+  DiscoverySilence (..),
   DiscoveryFailure (..),
   isDiscoveryFailure,
   recoverDiscovery,
@@ -13,7 +15,7 @@ module Network.SwitchBot.Bluez (
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM (atomically, modifyTVar', newTVarIO, readTVar, writeTVar)
 import Control.Exception.Safe (Exception, SomeException, bracket, bracketOnError, finally, fromException, mask, onException, throwIO, tryAny)
-import Control.Monad (unless, void)
+import Control.Monad (unless, void, when)
 import DBus
 import DBus.Client qualified as DBus
 import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
@@ -21,6 +23,7 @@ import Data.List (find)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
+import GHC.Clock (getMonotonicTimeNSec)
 import Network.SwitchBot.Advertisement (SensorReading, normalizeDeviceId)
 import Network.SwitchBot.Bluez.Advertisement
 import System.Timeout (timeout)
@@ -32,6 +35,17 @@ data DiscoveryFailure = DiscoveryFailure String
   deriving stock (Show)
 
 instance Exception DiscoveryFailure
+
+{- | No advertising signals despite Discovering=true. Renew the discovery
+session, but do not classify mere radio silence as an adapter reset condition.
+-}
+data DiscoverySilence = DiscoverySilence
+  deriving stock (Show)
+
+instance Exception DiscoverySilence
+
+monotonicSeconds :: IO Double
+monotonicSeconds = (/ 1000000000) . fromIntegral <$> getMonotonicTimeNSec
 
 -- DBus.call_ discards the error name; retain it for precise recovery decisions.
 newtype BluezCallError = BluezCallError MethodError
@@ -57,15 +71,22 @@ an error. The supplied scan action has one consumer and must stay within this
 scope. Failed/cancelled reads discard the connection and all cached readings.
 -}
 withScanner :: Maybe Text -> (String -> IO ()) -> ((Int -> IO [SensorReading]) -> IO a) -> IO a
-withScanner = withScannerConnection DBus.connectSystem DBus.disconnect
+withScanner = withScannerConnection DBus.connectSystem DBus.disconnect monotonicSeconds
 
 -- | Private-bus injection. The caller owns a dedicated D-Bus connection.
 withScannerWithClient :: DBus.Client -> Maybe Text -> (String -> IO ()) -> ((Int -> IO [SensorReading]) -> IO a) -> IO a
-withScannerWithClient client = withScannerConnection (pure client) (const $ pure ())
+withScannerWithClient client = withScannerWithClientAndClock client monotonicSeconds
 
-withScannerConnection :: IO DBus.Client -> (DBus.Client -> IO ()) -> Maybe Text -> (String -> IO ()) -> ((Int -> IO [SensorReading]) -> IO a) -> IO a
-withScannerConnection connect disconnect requested report use = do
+-- | Inject monotonic seconds for deterministic inactivity tests on a private bus.
+withScannerWithClientAndClock :: DBus.Client -> IO Double -> Maybe Text -> (String -> IO ()) -> ((Int -> IO [SensorReading]) -> IO a) -> IO a
+withScannerWithClientAndClock client = withScannerConnection (pure client) (const $ pure ())
+
+withScannerConnection :: IO DBus.Client -> (DBus.Client -> IO ()) -> IO Double -> Maybe Text -> (String -> IO ()) -> ((Int -> IO [SensorReading]) -> IO a) -> IO a
+withScannerConnection connect disconnect now requested report use = do
   current <- newIORef Nothing
+  -- Survives session replacement; reset after a renewal request so an actually
+  -- quiet room renews at most once a minute, rather than once per empty window.
+  lastActivity <- now >>= newIORef
   let close = do
         previous <- atomicModifyIORef' current (Nothing,)
         maybe (pure ()) (\(_, release) -> release) previous
@@ -82,13 +103,22 @@ withScannerConnection connect disconnect requested report use = do
                     pure (readWindow, stop `finally` disconnect client)
                   writeIORef current $ Just session
                   pure session
-              restore $ readWindow milliseconds
+              window <- restore $ readWindow milliseconds
+              observed <- now
+              previousActivity <- readIORef lastActivity
+              if scanHasActivity window
+                then writeIORef lastActivity observed
+                else when (observed - previousActivity >= 60) $ do
+                  writeIORef lastActivity observed
+                  report "SwitchBot discovery silent for 60 seconds; renewing discovery session"
+                  throwIO DiscoverySilence
+              pure $ scanResults window
           )
             `onException` close
   bracket (pure ()) (const close) $ const $ use scan
 
 -- Acquire under masking; every partial acquisition has a cleanup path.
-openDiscovery :: DBus.Client -> Maybe Text -> (String -> IO ()) -> IO (Int -> IO [SensorReading], IO ())
+openDiscovery :: DBus.Client -> Maybe Text -> (String -> IO ()) -> IO (Int -> IO ScanState, IO ())
 openDiscovery client requested report = do
   (owner, objects) <- getManagedObjects client
   adapter <- maybe (fail "No matching powered BlueZ adapter") pure $ findAdapter requested objects
@@ -130,7 +160,7 @@ openDiscovery client requested report = do
               writeTVar state $ nextScanWindow window
               pure window
             mapM_ (report . show) $ scanErrors result
-            pure $ scanResults result
+            pure result
       pure (readWindow, stop `finally` removeAll)
     )
     `onException` removeAll

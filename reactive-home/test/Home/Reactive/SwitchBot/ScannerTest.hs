@@ -1,6 +1,7 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Home.Reactive.SwitchBot.ScannerTest (test_scanSupervisor) where
 
@@ -9,7 +10,7 @@ import Control.Monad (forM_, void)
 import Data.IORef
 import Data.List (isInfixOf)
 import Home.Reactive.SwitchBot.Scanner
-import Network.SwitchBot.Advertisement (SensorReading)
+import Network.SwitchBot.Advertisement (SensorModel (MeterProCO2), SensorReading (..))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
 
@@ -77,20 +78,27 @@ test_scanSupervisor =
         readIORef f.recoveries >>= (@?= 0)
         readIORef f.waits >>= (@?= 0)
         readIORef f.logs >>= (@?= [])
-    , testCase "healthy scan resets the failure streak but preserves the recovery cooldown" $ do
+    , testCase "successful scan resets the error streak but requires readings to report healthy" $ do
         f <- fixture True
         step f 0
         step f 60
         writeIORef f.result $ pure []
         step f 70
+        messages <- readIORef f.logs
+        assertBool "empty success does not claim recovery" $ "SwitchBot scanner healthy again" `notElem` messages
         writeIORef f.result $ throwIO Busy
         step f 300
         step f 359
         readIORef f.recoveries >>= (@?= 1)
         step f 360
         readIORef f.recoveries >>= (@?= 2)
-        messages <- readIORef f.logs
-        assertBool "recovery transition logged" $ "SwitchBot scanner healthy again" `elem` messages
+        let reading = SensorReading "AABBCCDDEEFF" MeterProCO2 (Just 25.3) (Just 66) (Just 584) (Just 100) Nothing
+        writeIORef f.result $ pure [reading]
+        f.at 365
+        f.runScan >>= (@?= [reading])
+        f.runScan >>= (@?= [reading])
+        recovered <- readIORef f.logs
+        length (filter (== "SwitchBot scanner healthy again") recovered) @?= 1
     , testCase "failed recovery is rate-limited too" $ do
         f <- fixture True
         writeIORef f.recoveryFails True

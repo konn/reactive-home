@@ -32,8 +32,11 @@ newSupervisedScan actions = do
     (wasFailing, since, lastRecovery, lastLog) <- readIORef state
     case result of
       Right readings -> do
-        when wasFailing $ actions.report "SwitchBot scanner healthy again"
-        writeIORef state (False, Nothing, lastRecovery, now)
+        -- An empty successful call is not evidence that measurements resumed.
+        -- Clear the error streak, but keep health degraded until a reading arrives.
+        let stillFailing = wasFailing && null readings
+        when (wasFailing && not stillFailing) $ actions.report "SwitchBot scanner healthy again"
+        writeIORef state (stillFailing, Nothing, lastRecovery, if stillFailing then lastLog else now)
         pure readings
       Left err -> do
         let logFailure = not wasFailing || now - lastLog >= 60

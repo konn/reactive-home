@@ -42,6 +42,12 @@ Look for `SwitchBot scanner unhealthy`, `SwitchBot scanner recovery`, and
 `SwitchBot scanner healthy again` in the service log. SimpleBLE retains its
 normal scan retries without BlueZ adapter resets.
 
+BlueZ can also stall silently while reporting that discovery is active. After
+60 seconds with no advertising activity, reactive-home renews its discovery
+session without resetting the adapter, including when `bluez_recovery = false`.
+The log says `SwitchBot discovery silent for 60 seconds; renewing discovery session`.
+`SwitchBot scanner healthy again` is logged only when fresh sensor readings resume.
+
 Each sensor can choose its **Hometrics device name and measurement fields**:
 
 ```toml

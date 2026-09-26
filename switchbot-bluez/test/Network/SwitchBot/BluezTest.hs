@@ -59,8 +59,24 @@ test_signalCollection :: TestTree
 test_signalCollection =
   testGroup
     "BlueZ advertisements"
-    [ testCase "cached properties do not count as a fresh scan" $
+    [ testCase "cached properties do not count as a fresh scan or activity" $ do
         scanResults (initialScan adapter objects) @?= []
+        scanHasActivity (initialScan adapter objects) @?= False
+    , testCase "advertising activity is per-window and independent of successful decoding" $ do
+        let initial = initialScan adapter objects
+            state = collectSignal adapter (changed device (Map.singleton "RSSI" $ toVariant (-50 :: Int16)) []) initial
+        scanHasActivity state @?= True
+        scanResults state @?= []
+        scanHasActivity (nextScanWindow state) @?= False
+        scanHasActivity (collectSignal adapter (added Hub2) initial) @?= True
+        scanHasActivity (collectSignal adapter (changed device (Map.delete "ManufacturerData" $ properties MeterProCO2) []) initial) @?= True
+        scanHasActivity (collectSignal adapter (changed device (Map.delete "ServiceData" $ properties MeterProCO2) []) initial) @?= True
+    , testCase "GATT state and another adapter cannot mask silent discovery" $ do
+        let initial = initialScan adapter objects
+            connection = Map.fromList [("Connected", toVariant True), ("ServicesResolved", toVariant True)]
+        scanHasActivity (collectSignal adapter (changed device connection []) initial) @?= False
+        scanHasActivity (collectSignal adapter (changed "/org/bluez/hci1/dev_AA" (properties MeterProCO2) []) initial) @?= False
+        scanHasActivity (collectSignal adapter ((added Hub2) {signalBody = []}) initial) @?= False
     , testGroup
         "all captured sensor models"
         [ testCase (show model) $ do
