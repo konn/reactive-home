@@ -77,6 +77,7 @@ library
     Home.Reactive.Sesame5
     Home.Reactive.SwitchBot
     Home.Reactive.SwitchBot.Runtime
+    Home.Reactive.SwitchBot.Scanner
     Home.Reactive.Unlock
     Home.Reactive.Utils
 
@@ -147,6 +148,7 @@ test-suite reactive-home-test
     Home.Reactive.ESPresenseTest
     Home.Reactive.Metrics.HometricsTest
     Home.Reactive.ScheduledSwitchTest
+    Home.Reactive.SwitchBot.ScannerTest
     Home.Reactive.SwitchBotTest
 
   build-tool-depends:

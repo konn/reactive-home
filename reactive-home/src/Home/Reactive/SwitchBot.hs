@@ -57,6 +57,7 @@ data SwitchBotConfig = SwitchBotConfig
   , scan_window :: !(Maybe Duration)
   , report_interval :: !(Maybe Duration)
   , stale_after :: !(Maybe Duration)
+  , bluez_recovery :: !(Maybe Bool)
   }
   deriving stock (Show, Eq, Ord, Generic)
 
@@ -128,6 +129,7 @@ switchBotConfigCodec =
         <*> Toml.dioptional (Toml.hasCodec "scan_window") .= (.scan_window)
         <*> Toml.dioptional (Toml.hasCodec "report_interval") .= (.report_interval)
         <*> Toml.dioptional (Toml.hasCodec "stale_after") .= (.stale_after)
+        <*> Toml.dioptional (Toml.bool "bluez_recovery") .= (.bluez_recovery)
 
 scanWindow, reportInterval, staleAfter :: SwitchBotConfig -> Duration
 scanWindow = fromMaybe (seconds 5) . (.scan_window)

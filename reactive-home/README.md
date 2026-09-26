@@ -13,6 +13,7 @@ starting point:
 [hometrics]
 endpoint = "http://localhost:8080/temperatures"
 
+[switchbot]
 [switchbot.sensors]
 room = "AA:BB:CC:DD:EE:01"
 co2 = "AA:BB:CC:DD:EE:02"
@@ -31,9 +32,20 @@ It needs a running system D-Bus/BlueZ service and a powered BLE adapter. Set
 `adapter = "hci0"` under `[switchbot]` to select one explicitly. Other platforms
 use SimpleBLE. To select SimpleBLE on Linux, build/run with `-fsimpleble`.
 
+BlueZ discovery stays open across sampling windows. If discovery repeatedly fails
+for 60 seconds, reactive-home power-cycles the selected adapter, with at least
+five minutes between attempts. This briefly disconnects other BLE devices on
+that adapter, including Sesame, which reconnects through its existing supervisor.
+Set `bluez_recovery = false` under `[switchbot]` to disable adapter resets. Missing
+sensor advertisements and manually switched-off adapters never trigger a reset.
+Look for `SwitchBot scanner unhealthy`, `SwitchBot scanner recovery`, and
+`SwitchBot scanner healthy again` in the service log. SimpleBLE retains its
+normal scan retries without BlueZ adapter resets.
+
 Each sensor can choose its **Hometrics device name and measurement fields**:
 
 ```toml
+[switchbot]
 [switchbot.sensors]
 hub2 = { id = "AA:BB:CC:DD:EE:01", hometrics_name = "living-room", hometrics_fields = ["temperature", "humidity"] }
 co2 = { id = "AA:BB:CC:DD:EE:02", hometrics_name = "living-room", hometrics_fields = ["co2"] }
@@ -66,6 +78,7 @@ port = 1883
 [hometrics]
 endpoint = "http://localhost:8080/temperatures"
 
+[switchbot]
 [switchbot.sensors]
 hub2 = "AA:BB:CC:DD:EE:01"
 co2 = { id = "AA:BB:CC:DD:EE:02", mqtt_topic = "switchbot/co2/state" }

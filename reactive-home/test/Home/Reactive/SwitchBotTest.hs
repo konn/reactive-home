@@ -46,6 +46,10 @@ test_switchBotConfig =
         scanWindow sensorConfig @?= seconds 5
         reportInterval sensorConfig @?= seconds 60
         staleAfter sensorConfig @?= seconds 120
+    , testCase "BlueZ recovery can be disabled per scanner" $
+        case Toml.decodeExact (Toml.genericCodec @Config) $ T.replace "[switchbot]" "[switchbot]\nbluez_recovery = false" configText of
+          Left err -> assertFailure $ show err
+          Right cfg -> (fmap (.bluez_recovery) cfg.switchbot) @?= Just (Just False)
     , testCase "optional MQTT relay and durations parse" $ do
         let text =
               T.replace "[switchbot]" "[switchbot]\nscan_window = \"2s\"\nreport_interval = \"10s\"\nstale_after = \"1m\"" configText
@@ -108,6 +112,7 @@ test_switchBotConfig =
             , ("missing device ID", sensorOption "mqtt_topic = \"home/air\"")
             , ("unknown sensor option", sensorOption "id = \"aabbccddeeff\", mqtt_topci = \"home/air\"")
             , ("duplicate ID across forms", configText <> "\nother = { id = \"AABBCCDDEEFF\", mqtt_topic = \"home/air\" }\n")
+            , ("wrong recovery type", option "bluez_recovery = \"yes\"")
             , ("global relay option", option "mqtt_prefix = \"switchbot\"")
             , ("unsupported Hometrics field", sensorOption "id = \"aabbccddeeff\", hometrics_fields = [\"battery\"]")
             , ("wrong Hometrics field type", sensorOption "id = \"aabbccddeeff\", hometrics_fields = \"co2\"")
@@ -141,7 +146,7 @@ configText =
   """
 
 sensorConfig :: SwitchBotConfig
-sensorConfig = SwitchBotConfig (Map.singleton "room" $ SensorId "AABBCCDDEEFF") Nothing Nothing Nothing Nothing
+sensorConfig = SwitchBotConfig (Map.singleton "room" $ SensorId "AABBCCDDEEFF") Nothing Nothing Nothing Nothing Nothing
 
 sensorOptions :: T.Text -> Maybe T.Text -> SwitchBotSensor
 sensorOptions device topic = SensorOptions $ SwitchBotSensorOptions device topic defaultHometricsSensorConfig

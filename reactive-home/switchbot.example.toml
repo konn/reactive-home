@@ -11,6 +11,8 @@ endpoint = "http://localhost:8080/temperatures"
 # report_interval = "1m"
 # stale_after = "2m"
 # adapter = "adapter identifier or address"
+# bluez_recovery = true  # Linux: reset adapter after 60s of discovery errors; 5m cooldown.
+# Adapter recovery briefly interrupts shared BLE connections (including Sesame).
 
 # Discover IDs with `cabal run switchbot-scan-bluez` on Raspberry Pi/Linux,
 # or `cabal run switchbot-scan` on SimpleBLE/macOS. Replace these example IDs.

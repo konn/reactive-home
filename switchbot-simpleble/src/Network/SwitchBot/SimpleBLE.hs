@@ -3,7 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Advertisement-only scanning using the same SimpleBLE binding as Sesame.
-module Network.SwitchBot.SimpleBLE (getScanner, scanReadings, scanSensors) where
+module Network.SwitchBot.SimpleBLE (getScanner, scanReadings, scanSensors, withScanner) where
 
 import Control.Exception.Safe (throwIO, tryAny)
 import Control.Monad (forM, unless)
@@ -11,6 +11,12 @@ import Data.Maybe (catMaybes)
 import Data.Text (Text)
 import Network.SwitchBot.Advertisement
 import SimpleBLE qualified as BLE
+
+{- | Scoped scanner API shared with BlueZ. SimpleBLE retains finite hardware
+scans, reacquiring the adapter each window so retries can recover hotplug.
+-}
+withScanner :: Maybe Text -> (String -> IO ()) -> ((Int -> IO [SensorReading]) -> IO a) -> IO a
+withScanner requested report use = use $ \milliseconds -> scanSensors requested milliseconds report
 
 -- | Same finite-window entry point as the BlueZ backend.
 scanSensors :: Maybe Text -> Int -> (String -> IO ()) -> IO [SensorReading]

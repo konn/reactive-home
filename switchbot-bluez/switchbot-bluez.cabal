@@ -92,7 +92,10 @@ test-suite switchbot-bluez-test
   hs-source-dirs: test
   main-is: Test.hs
   -- cabal-gild: discover test --exclude=test/Test.hs
-  other-modules: Network.SwitchBot.BluezTest
+  other-modules:
+    Network.SwitchBot.Bluez.ScannerTest
+    Network.SwitchBot.BluezTest
+
   build-tool-depends: tasty-discover:tasty-discover
   ghc-options: -threaded
   build-depends:

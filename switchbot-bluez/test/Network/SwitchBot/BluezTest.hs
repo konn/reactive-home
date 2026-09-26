@@ -1,4 +1,4 @@
-module Network.SwitchBot.BluezTest (test_signalCollection, test_dbusDiscovery) where
+module Network.SwitchBot.BluezTest (test_signalCollection, test_dbusDiscovery, adapter, device, objects, properties, changed, added) where
 
 import Control.Concurrent (forkIO, killThread, newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.STM
@@ -137,6 +137,10 @@ test_dbusDiscovery = testCase "private D-Bus discovery, filtering, freshness and
             adapter
             DBus.defaultInterface
               { DBus.interfaceName = "org.bluez.Adapter1"
+              , DBus.interfaceProperties =
+                  [ DBus.readOnlyProperty "Powered" (pure True)
+                  , DBus.readOnlyProperty "Discovering" (pure True)
+                  ]
               , DBus.interfaceMethods =
                   [ DBus.autoMethod "SetDiscoveryFilter" setFilter
                   , DBus.autoMethod "StartDiscovery" start

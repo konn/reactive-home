@@ -13,22 +13,25 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (getCurrentTime)
-import Effectful (Eff, IOE, (:>))
+import Effectful (Eff, IOE, UnliftStrategy (SeqUnlift), withEffToIO, (:>))
 import Effectful.Concurrent (Concurrent, threadDelay)
 import Effectful.Concurrent.Async (concurrently_, race)
 import Effectful.Concurrent.STM (TVar, atomically, modifyTVar', newTVarIO, readTVar)
 import FRP.Rhine hiding (forever)
+import GHC.Clock (getMonotonicTimeNSec)
 import Home.Reactive.Duration (Duration (..))
 import Home.Reactive.Metrics.Hometrics
 import Home.Reactive.Orphans ()
 import Home.Reactive.Sensor
 import Home.Reactive.SwitchBot
+import Home.Reactive.SwitchBot.Scanner
 import Network.HTTP.Client (newManager)
 import Network.HTTP.Client.TLS (tlsManagerSettings)
+import Network.SwitchBot.Advertisement qualified
 #ifdef SWITCHBOT_BLUEZ
-import Network.SwitchBot.Bluez (scanSensors)
+import Network.SwitchBot.Bluez (withScanner, isDiscoveryFailure, recoverDiscovery)
 #else
-import Network.SwitchBot.SimpleBLE (scanSensors)
+import Network.SwitchBot.SimpleBLE (withScanner)
 #endif
 import System.IO (hPutStrLn, stderr)
 
@@ -44,18 +47,46 @@ runSwitchBot ::
   (Text -> Eff es ()) ->
   (SwitchBotUpdate -> Eff es ()) ->
   Eff es ()
-runSwitchBot cfg hometrics relay report observe = do
+runSwitchBot cfg hometrics relay report observe =
+  withEffToIO SeqUnlift $ \run -> withScanner cfg.adapter logScanner $ \scan ->
+    run $ runSwitchBotWithScan cfg hometrics relay report observe (scan milliseconds) (scannerRecovery cfg)
+  where
+    milliseconds = round $ (scanWindow cfg).seconds * 1000
+    logScanner = hPutStrLn stderr
+
+scannerRecovery :: SwitchBotConfig -> E.SomeException -> Maybe (IO ())
+#ifdef SWITCHBOT_BLUEZ
+scannerRecovery cfg err
+  | cfg.bluez_recovery /= Just False && isDiscoveryFailure err = Just $ recoverDiscovery cfg.adapter (hPutStrLn stderr)
+  | otherwise = Nothing
+#else
+scannerRecovery _ _ = Nothing
+#endif
+
+runSwitchBotWithScan ::
+  (Concurrent :> es, IOE :> es) =>
+  SwitchBotConfig ->
+  Maybe HometricsConfig ->
+  Maybe ([SensorSample] -> Eff es ()) ->
+  (Text -> Eff es ()) ->
+  (SwitchBotUpdate -> Eff es ()) ->
+  IO [Network.SwitchBot.Advertisement.SensorReading] ->
+  (E.SomeException -> Maybe (IO ())) ->
+  Eff es ()
+runSwitchBotWithScan cfg hometrics relay report observe rawScan recover = do
+  scan <-
+    liftIO $
+      newSupervisedScan
+        ScannerActions
+          { scan = rawScan
+          , monotonicSeconds = (/ 1000000000) . fromIntegral <$> getMonotonicTimeNSec
+          , waitAfterFailure = IO.threadDelay (milliseconds * 1000)
+          , report = hPutStrLn stderr
+          , recovery = recover
+          }
   httpPending <- newTVarIO Map.empty
   mqttPending <- newTVarIO Map.empty
   let httpSensors = Map.filter (not . null . hometricsFields) $ hometricsSensorConfigs cfg
-      scan =
-        E.handleAny
-          ( \err -> do
-              hPutStrLn stderr $ "SwitchBot scan failed; retrying: " <> show err
-              IO.threadDelay (milliseconds * 1000)
-              pure []
-          )
-          $ scanSensors cfg.adapter milliseconds (hPutStrLn stderr . ("SwitchBot advertisement: " <>))
       network =
         ( proc () -> do
             readings <- tagS -< ()

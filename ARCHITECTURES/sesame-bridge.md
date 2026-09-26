@@ -201,7 +201,12 @@ session termination is followed by either:
 
 The passive path keeps the bridge available after a disconnect without spinning
 against BlueZ. The command path prioritizes pending user commands while still
-giving BlueZ a brief period to settle.
+giving BlueZ a brief period to settle. These retries recreate the device/GATT
+session; they do not power-cycle the adapter or restart bluetoothd. A stuck
+adapter-wide discovery state can therefore survive device reconnection attempts.
+When SwitchBot scanning is enabled, reactive-home can recover sustained discovery
+errors by power-cycling its selected adapter; see `switchbot.md`. The Sesame
+supervisor reconnects normally after that shared-adapter reset.
 
 ## Readiness and Runtime Diagnostics
 

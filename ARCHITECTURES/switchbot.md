@@ -6,8 +6,8 @@
 `Network.SwitchBot.Advertisement`. It depends on no Bluetooth runtime. The
 `switchbot-simpleble` adapter reuses `simpleble-hs`, the binding already used by
 the Sesame transport. `switchbot-bluez` supplies a separate Linux D-Bus adapter,
-following the same core/transport split as `haskesame-*`. Both expose the same
-finite-window `scanSensors` entry point and read advertisements without pairing,
+following the same core/transport split as `haskesame-*`. Both expose a scoped `withScanner` API and the one-shot
+`scanSensors` entry point and read advertisements without pairing,
 connecting, writing GATT characteristics, or involving the SwitchBot cloud.
 
 `reactive-home` selects BlueZ on Linux, including Raspberry Pi, and SimpleBLE on
@@ -65,26 +65,61 @@ as having no probe reading. Trailing bytes are tolerated.
 
 ## Scanning and recovery
 
-One scanner owns finite scan windows, defaulting to five seconds. SimpleBLE
-clears the seen-peripheral list at scan start; each window yields the latest
-advertisement from each peripheral seen during that window. Samples are stamped
-at the window end, so timestamps have scan-window resolution rather than exact
-radio-arrival resolution. An empty window still ticks Rhine and expires stale
-snapshots. Adapter failure logs an error, waits one window and retries adapter
-selection; per-peripheral decoding errors do not discard other devices.
+One scanner produces sampling windows, defaulting to five seconds. SimpleBLE
+retains finite hardware scans and clears its seen-peripheral list at scan start.
+Both backends return the latest advertisement per device in the window. Samples
+are stamped at the window end. Empty windows still tick Rhine and expire stale
+snapshots; they are not scanner failures.
 
-BlueZ opens a dedicated system-bus client per finite window and selects a powered
-adapter by `hci0`-style name, object path, or MAC address. Its discovery filter
-uses LE transport and repeated advertisement notifications. It merges
-`InterfacesAdded` and `PropertiesChanged` data, but only manufacturer data
-received during that window makes a measurement fresh. A cached device object,
-RSSI change, or service-only update does not refresh stale measurements.
-Invalidated properties and removed devices discard pending readings. D-Bus
-calls have five-second deadlines; cancellation and normal completion release
-only the scanner client's discovery session. See the
-[BlueZ adapter API](https://bluez.readthedocs.io/en/latest/adapter-api/) for the
-discovery filter and session contract. Hardware-independent tests replay signals
-and run the scanner against a private D-Bus service.
+BlueZ's scoped `withScanner` owns one dedicated system-bus connection and one
+continuous discovery session across windows. The finite `scanSensors` API remains
+available for one-shot callers. The filter uses LE transport and duplicate
+advertisement notifications. Device metadata survives window boundaries, but
+readings, decoder errors and manufacturer freshness flags are cleared atomically
+at each boundary. Only new manufacturer data can refresh a measurement; cached
+objects, RSSI changes and service-only updates cannot do so.
+
+The scanner checks `Powered` and `Discovering` on the original daemon's unique
+D-Bus name each window. Loss of discovery, daemon replacement or a D-Bus error
+releases the session and clears its entire cache. The next call opens a fresh
+connection, selects the adapter and installs new signal matches. Exceptions and
+cancellation clean up owned matches, discovery and the connection. Normal cleanup
+releases only this client's discovery session. All D-Bus calls have five-second
+deadlines. See the [BlueZ adapter API](https://bluez.readthedocs.io/en/latest/adapter-api/).
+
+The runtime supervisor reports transitions with `SwitchBot scanner unhealthy`
+and `SwitchBot scanner healthy again`, and repeats unresolved errors at most once
+per minute. Failure yields an empty tick after a scan-window delay, keeping stale
+expiry and delivery workers running. It uses monotonic time for recovery timing.
+On Linux, 60 seconds of consecutive `StartDiscovery` InProgress/Failed errors or
+unexpectedly stopped discovery triggers a power cycle of the selected adapter
+through `Adapter1.Powered`. Attempts, including failed attempts, are separated by
+at least five minutes. A successful scan resets the failure streak but preserves
+the cooldown. Power-on is attempted in a finalizer even if power-off fails or
+recovery is cancelled. Permission errors, absent/manually powered-off adapters,
+configuration errors and radio silence do not trigger adapter resets.
+
+`[switchbot].bluez_recovery` defaults to `true`; set it to `false` to retain
+session retries without shared-adapter resets. SimpleBLE always uses session
+retries and does not perform BlueZ recovery. Resetting the selected adapter
+interrupts its GATT connections, including Sesame, whose supervisor reconnects.
+The application uses its existing BlueZ D-Bus access; it does not invoke sudo or
+restart the system Bluetooth service. Recovery failures are logged. If BlueZ
+cannot power-cycle the adapter, an operator can still restart `bluetooth.service`.
+
+The September 26 incident illustrates the distinction: Sesame's existing retry
+loop recreated device/GATT sessions, while SwitchBot recreated discovery clients.
+Neither reset the shared controller state. The kernel rejected discovery with
+MGMT Busy even with both clients stopped; restarting Bluetooth restored all three
+sensors. Sensor IDs had not rotated. A concurrent Sesame reconnect was observed
+at onset, but the exact trigger was not captured. Persistent discovery reduces
+start/stop transitions; the adapter reset handles sustained discovery failures
+rather than assuming reconnecting a client can clear them.
+
+Hardware-independent tests replay advertisements and exercise persistent windows,
+Busy failures, daemon replacement, cancellation, permission failures and power
+recovery against a private D-Bus service. The shared supervisor tests recovery
+thresholds, cooldowns, healthy silence and cancellation for both backend policies.
 
 Each SimpleBLE process should own its scanner adapter. SimpleBLE's adapter scan controls
 are shared: callers embedding this scanner alongside another scanner in the

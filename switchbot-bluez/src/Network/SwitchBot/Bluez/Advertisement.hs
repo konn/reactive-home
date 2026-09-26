@@ -5,6 +5,7 @@ module Network.SwitchBot.Bluez.Advertisement (
   ManagedObjects,
   ScanState,
   initialScan,
+  nextScanWindow,
   collectSignal,
   scanResults,
   scanErrors,
@@ -43,6 +44,12 @@ initialScan adapter objects =
     Set.empty
     Map.empty
     Map.empty
+
+{- | Keep device metadata, but require a new manufacturer advertisement in each
+window. Cached measurements must never acquire a new observation timestamp.
+-}
+nextScanWindow :: ScanState -> ScanState
+nextScanWindow state = state {seenManufacturer = Set.empty, readings = Map.empty, errors = Map.empty}
 
 scanResults :: ScanState -> [SensorReading]
 scanResults = Map.elems . (.readings)
