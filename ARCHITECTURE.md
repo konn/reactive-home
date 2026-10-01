@@ -29,9 +29,10 @@ families:
   `autolock_timeout` in the per-device config. Autolock observes Sesame status
   events on the heartbeat path: an `UNLOCKED` status starts the timer, a later
   `LOCKED` status cancels it, and expiry publishes `LOCKED` to the device
-  command topic. Per-device `autolock_dismiss` switch conditions mirror the room
-  unlock dismissal model and suppress timer start or firing while any configured
-  switch is on.
+  command topic. Per-device `autolock_dismiss` switch conditions suppress timer
+  start or firing while any configured switch is on. Room `unlock.dismiss`
+  switches only prevent qualifying a new vacancy; once qualified, the next
+  approach unlocks even if a dismissal switch has since turned on.
   The app defaults to broker-assigned MQTT client identifiers; a stable
   `clientId` is an optional top-level config setting for deployments that need
   one.

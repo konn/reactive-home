@@ -453,15 +453,99 @@ test_unlockHeartbeat =
             feedbacks = runUnlockFeedbackInputs exampleUnlockConfig snapshots
         snd <$> feedbacks @?= replicate 6 Nothing
         (.status) . fst <$> feedbacks @?= [Occupied, Waiting, Vacant, ReadyForUnlock, Vacant, Vacant]
-    , testCase "present dismissal switch suppresses unlock" $ do
+    , testCase "dismissal after vacancy still permits exactly one approach unlock" $ do
         let readyTime = addUTCTime (3 * 60 + 1) baseTime
-            approachTime = addUTCTime (3 * 60 + 2) baseTime
+            dismissalTime = addUTCTime 1 readyTime
+            approachTime = addUTCTime 2 readyTime
+            stillNearTime = addUTCTime 3 readyTime
+            dismissalOffTime = addUTCTime 4 readyTime
+            snapshots =
+              [ TestUnlockSnapshot baseTime emptyMqttSnapshot vacantSnapshot
+              , TestUnlockSnapshot readyTime emptyMqttSnapshot vacantSnapshot
+              , TestUnlockSnapshot dismissalTime dismissedMqttSnapshot vacantSnapshot
+              , TestUnlockSnapshot approachTime dismissedMqttSnapshot (exampleOccupiedSnapshot approachTime 4.5)
+              , TestUnlockSnapshot stillNearTime dismissedMqttSnapshot (exampleOccupiedSnapshot stillNearTime 4.5)
+              , TestUnlockSnapshot dismissalOffTime dismissalOffMqttSnapshot (exampleOccupiedSnapshot dismissalOffTime 4.5)
+              ]
+            feedbacks = runUnlockFeedbackInputsWithMqtt dismissUnlockConfig snapshots
+        snd <$> feedbacks @?= [Nothing, Nothing, Nothing, Just Unlock, Nothing, Nothing]
+        (.status) . fst <$> feedbacks @?= [Waiting, Vacant, Vacant, Occupied, Occupied, Occupied]
+    , testGroup
+        "dismissal preserves qualified vacancy through far room presence and expiry"
+        [ testCase label $ do
+            let readyTime = addUTCTime (3 * 60 + 1) baseTime
+                bedroomTime = addUTCTime 1 readyTime
+                expiryTime = addUTCTime 2 readyTime
+                returnTime = addUTCTime 3 readyTime
+                approachTime = addUTCTime 4 readyTime
+                snapshots =
+                  [ TestUnlockSnapshot baseTime emptyMqttSnapshot vacantSnapshot
+                  , TestUnlockSnapshot readyTime emptyMqttSnapshot vacantSnapshot
+                  , TestUnlockSnapshot bedroomTime bedroomMqtt (exampleBedroomSnapshot bedroomTime 4.0)
+                  , TestUnlockSnapshot expiryTime dismissedMqttSnapshot vacantSnapshot
+                  , TestUnlockSnapshot returnTime dismissedMqttSnapshot (exampleBedroomSnapshot returnTime 4.0)
+                  , TestUnlockSnapshot approachTime dismissedMqttSnapshot (exampleTwoSensorSnapshot returnTime approachTime)
+                  ]
+                feedbacks = runUnlockFeedbackInputsWithMqtt dismissUnlockConfig snapshots
+            snd <$> feedbacks @?= [Nothing, Nothing, Nothing, Nothing, Nothing, Just Unlock]
+            (.status) . fst <$> feedbacks @?= [Waiting, Vacant, ReadyForUnlock, Vacant, ReadyForUnlock, Occupied]
+        | (label, bedroomMqtt) <-
+            [ ("dismissal starts before room reoccupies", dismissedMqttSnapshot)
+            , ("dismissal starts after room reoccupies", emptyMqttSnapshot)
+            ]
+        ]
+    , testGroup
+        "dismissal prevents qualifying a new vacancy"
+        [ testCase label $ do
+            let beforeDeadline = addUTCTime (3 * 60 - 1) baseTime
+                deadline = addUTCTime (3 * 60) baseTime
+                afterDeadline = addUTCTime (3 * 60 + 1) baseTime
+                approachTime = addUTCTime (3 * 60 + 2) baseTime
+                snapshots =
+                  [ TestUnlockSnapshot baseTime initialMqtt vacantSnapshot
+                  , TestUnlockSnapshot beforeDeadline dismissedMqttSnapshot vacantSnapshot
+                  , TestUnlockSnapshot deadline dismissedMqttSnapshot vacantSnapshot
+                  , TestUnlockSnapshot afterDeadline dismissedMqttSnapshot vacantSnapshot
+                  , TestUnlockSnapshot approachTime dismissedMqttSnapshot (exampleOccupiedSnapshot approachTime 4.5)
+                  ]
+                feedbacks = runUnlockFeedbackInputsWithMqtt dismissUnlockConfig snapshots
+            snd <$> feedbacks @?= replicate 5 Nothing
+            (.status) . fst <$> feedbacks @?= [Waiting, Waiting, Waiting, Waiting, Occupied]
+        | (label, initialMqtt) <-
+            [ ("dismissal is already on at startup", dismissedMqttSnapshot)
+            , ("dismissal turns on while waiting", emptyMqttSnapshot)
+            ]
+        ]
+    , testCase "turning dismissal off permits an elapsed vacancy to qualify" $ do
+        let readyTime = addUTCTime (3 * 60 + 1) baseTime
+            dismissalOffTime = addUTCTime 1 readyTime
+            approachTime = addUTCTime 2 readyTime
+            snapshots =
+              [ TestUnlockSnapshot baseTime dismissedMqttSnapshot vacantSnapshot
+              , TestUnlockSnapshot readyTime dismissedMqttSnapshot vacantSnapshot
+              , TestUnlockSnapshot dismissalOffTime dismissalOffMqttSnapshot vacantSnapshot
+              , TestUnlockSnapshot approachTime dismissalOffMqttSnapshot (exampleOccupiedSnapshot approachTime 4.5)
+              ]
+            feedbacks = runUnlockFeedbackInputsWithMqtt dismissUnlockConfig snapshots
+        snd <$> feedbacks @?= [Nothing, Nothing, Nothing, Just Unlock]
+        (.status) . fst <$> feedbacks @?= [Waiting, Waiting, Vacant, Occupied]
+    , testCase "dismissal prevents rearming after a qualified approach unlock" $ do
+        let readyTime = addUTCTime (3 * 60 + 1) baseTime
+            approachTime = addUTCTime 1 readyTime
+            vacantTime = addUTCTime 2 readyTime
+            elapsedTime = addUTCTime (3 * 60 + 1) vacantTime
+            secondApproachTime = addUTCTime 1 elapsedTime
             snapshots =
               [ TestUnlockSnapshot baseTime emptyMqttSnapshot vacantSnapshot
               , TestUnlockSnapshot readyTime emptyMqttSnapshot vacantSnapshot
               , TestUnlockSnapshot approachTime dismissedMqttSnapshot (exampleOccupiedSnapshot approachTime 4.5)
+              , TestUnlockSnapshot vacantTime dismissedMqttSnapshot vacantSnapshot
+              , TestUnlockSnapshot elapsedTime dismissedMqttSnapshot vacantSnapshot
+              , TestUnlockSnapshot secondApproachTime dismissedMqttSnapshot (exampleOccupiedSnapshot secondApproachTime 4.5)
               ]
-        runUnlockInputsWithMqtt dismissUnlockConfig snapshots @?= [Nothing, Nothing, Nothing]
+            feedbacks = runUnlockFeedbackInputsWithMqtt dismissUnlockConfig snapshots
+        snd <$> feedbacks @?= [Nothing, Nothing, Just Unlock, Nothing, Nothing, Nothing]
+        (.status) . fst <$> feedbacks @?= [Waiting, Vacant, Occupied, Waiting, Waiting, Occupied]
     , testCase "absent dismissal switch allows unlock" $ do
         let readyTime = addUTCTime (3 * 60 + 1) baseTime
             approachTime = addUTCTime (3 * 60 + 2) baseTime
@@ -587,26 +671,37 @@ runUnlockInputsWithMqtt cfg inputs =
 
 runUnlockFeedbackInputs :: UnlockConfig -> [TestSnapshot] -> [(UnlockFeedback, Maybe UnlockEvent)]
 runUnlockFeedbackInputs cfg inputs =
+  runUnlockFeedbackInputsWithMqtt
+    cfg
+    [ TestUnlockSnapshot at emptyMqttSnapshot snapshot
+    | TestSnapshot {..} <- inputs
+    ]
+
+runUnlockFeedbackInputsWithMqtt :: UnlockConfig -> [TestUnlockSnapshot] -> [(UnlockFeedback, Maybe UnlockEvent)]
+runUnlockFeedbackInputsWithMqtt cfg inputs =
   runPureEff $ runReader cfg $ go unlockFeedbackS Nothing inputs
   where
-    go :: UnlockFeedbackS -> Maybe UTCTime -> [TestSnapshot] -> Eff '[Reader UnlockConfig] [(UnlockFeedback, Maybe UnlockEvent)]
+    go :: UnlockFeedbackS -> Maybe UTCTime -> [TestUnlockSnapshot] -> Eff '[Reader UnlockConfig] [(UnlockFeedback, Maybe UnlockEvent)]
     go _ _ [] = pure []
-    go signal previous (TestSnapshot {..} : rest) = do
+    go signal previous (TestUnlockSnapshot {..} : rest) = do
       let timeInfo =
             TimeInfo
-              { sinceLast = maybe 0 (realToFrac . (at `diffUTCTime`)) previous
-              , sinceInit = realToFrac $ at `diffUTCTime` baseTime
-              , absolute = at
+              { sinceLast = maybe 0 (realToFrac . (unlockAt `diffUTCTime`)) previous
+              , sinceInit = realToFrac $ unlockAt `diffUTCTime` baseTime
+              , absolute = unlockAt
               , tag = ()
               }
-      Result signal' event <- runReaderT (stepAutomaton signal (emptyMqttSnapshot, snapshot)) timeInfo
-      (event :) <$> go signal' (Just at) rest
+      Result signal' event <- runReaderT (stepAutomaton signal (unlockMqtt, unlockSnapshot)) timeInfo
+      (event :) <$> go signal' (Just unlockAt) rest
 
 emptyMqttSnapshot :: MqttSnapshot
 emptyMqttSnapshot = MqttSnapshot {switches = HM.empty}
 
 dismissedMqttSnapshot :: MqttSnapshot
 dismissedMqttSnapshot = MqttSnapshot {switches = HM.fromList [("do-not-disturb", True)]}
+
+dismissalOffMqttSnapshot :: MqttSnapshot
+dismissalOffMqttSnapshot = MqttSnapshot {switches = HM.fromList [("do-not-disturb", False)]}
 
 sensorDeviceCount :: ESPSensorName -> ESPresenseSnapshot -> Int
 sensorDeviceCount sensor snapshot =

@@ -19,6 +19,25 @@ to 1883. A sensor-only configuration without relays does not initialize
 an MQTT client. MQTT clients can also start with no subscriptions when used only
 for relaying sensor data.
 
+## Room Unlock and Dismissal
+
+`Home.Reactive.Unlock` starts in `Waiting`. When the configured room stays empty
+for `unlock.delay` with no approach detected, it can qualify as `Vacant` only if
+every configured `unlock.dismiss` switch is off or absent. A switch such as
+`do-not-disturb` therefore prevents new vacancy qualification while it is on.
+The switch does not reset the observed vacancy duration: if it turns off while
+the room is still empty and the delay has elapsed, the next heartbeat can qualify
+the vacancy.
+
+Once qualified, vacancy survives dismissal switches turning on. Room presence
+without an approach moves `Vacant` to `ReadyForUnlock`; losing that presence
+returns to `Vacant` without requiring another delay. An approach in either state
+emits one `Unlock` regardless of dismissal switches and moves to `Occupied`.
+Further approaches cannot unlock again until a new vacancy qualifies, which
+still requires dismissal switches to be off. This rule applies only to room
+unlock: Sesame `autolock_dismiss` continues to suppress both timer start and
+firing.
+
 ## Scheduled MQTT Switches
 
 `Home.Reactive.MQTT.MqttDevices` accepts optional `switches` and

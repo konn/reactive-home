@@ -56,6 +56,7 @@ data UnlockConfig = UnlockConfig
   , locks :: ![T.Text]
   , approach :: [ApproachCondition]
   , dismiss :: [DismissCondition]
+  -- ^ Switches that prevent qualifying a new vacancy.
   }
   deriving stock (Eq, Show, Ord, Generic)
   deriving anyclass (Hashable, ToJSON, FromJSON, ToJSONKey)
@@ -106,8 +107,10 @@ data UnlockStatus
     Occupied
   | -- | Empty and waiting for the specified delay to pass
     Waiting
-  | Vacant
-  | ReadyForUnlock
+  | -- | Qualified vacancy, preserved until an approach is detected
+    Vacant
+  | -- | Qualified vacancy with room presence, still waiting for an approach
+    ReadyForUnlock
   deriving stock (Eq, Show, Ord, Generic)
   deriving anyclass (Hashable)
 
@@ -135,29 +138,28 @@ unlockFeedbackS =
             [ mqtt.switches HM.!? sw.switch == Just True
             | sw <- dismissal
             ]
-        !unlockCmd
-          | not dismiss = Just Unlock
-          | otherwise = Nothing
         !next =
           if
             | near ->
                 case prev of
-                  Vacant; ReadyForUnlock -> (unlockCmd, Occupied)
+                  Vacant; ReadyForUnlock -> (Just Unlock, Occupied)
                   Waiting; Occupied -> (Nothing, Occupied)
             | occupied ->
                 case prev of
-                  (Vacant; ReadyForUnlock)
-                    | not near -> (Nothing, ReadyForUnlock)
-                    | otherwise -> (unlockCmd, Occupied)
+                  Vacant; ReadyForUnlock -> (Nothing, ReadyForUnlock)
                   _ -> (Nothing, Occupied)
             | (ReadyForUnlock; Vacant) <- prev -> (Nothing, Vacant)
+            -- Dismissal gates only new vacancy qualification, not an existing one.
             | duration >= thresh.seconds, not dismiss -> (Nothing, Vacant)
             | otherwise -> (Nothing, Waiting)
         !(event, status) = next
         !fb = UnlockFeedback {near, occupied, duration, status}
     returnA -< ((fb, event), status)
 
--- | Emits 'Unlock' when the room becomes occupied after vacant for at least the specified delay.
+{- | Emits 'Unlock' on the first approach after a qualified vacancy.
+Dismissal switches prevent qualifying new vacancies, but do not revoke one
+already qualified while the room was empty for at least the specified delay.
+-}
 unlockEventS ::
   ( Reader UnlockConfig :> es
   , Time cl ~ UTCTime
