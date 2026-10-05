@@ -25,16 +25,32 @@ for relaying sensor data.
 for `unlock.delay` with no approach detected, it can qualify as `Vacant` only if
 every configured `unlock.dismiss` switch is off or absent. A switch such as
 `do-not-disturb` therefore prevents new vacancy qualification while it is on.
-The switch does not reset the observed vacancy duration: if it turns off while
-the room is still empty and the delay has elapsed, the next heartbeat can qualify
-the vacancy.
+When the last active dismissal switch turns off, both timers restart: auto-unlock
+first rechecks room absence for `espresense.rooms.<unlock.room>.timeout`, then
+requires a fresh `unlock.delay` of continuous vacancy with no approach or
+dismissal. With a three-minute room timeout and a 30-second unlock delay, the
+earliest new qualification is three minutes and 30 seconds after DND turns off.
+Room presence returning during the delay restarts that delay. A later room
+expiry can therefore postpone qualification further.
 
-Once qualified, vacancy survives dismissal switches turning on. Room presence
+This recheck is local to auto-unlock. ESPresense snapshots and device `lastSeen`
+timestamps remain actual observations; an empty snapshot during the recheck
+cannot qualify a vacancy. `UnlockFeedback.rechecking` reports this interval,
+`occupied` continues to report observed room presence, and `duration` counts
+only eligible vacancy after the recheck. The app supplies the configured room
+timeout to `unlockFeedbackS`/`unlockEventS`; an unknown unlock room is a startup
+error. An off or absent switch at startup does not itself trigger a recheck.
+Repeated off messages do not restart either timer, and with multiple dismissal
+switches the reset occurs only when all are off or absent.
+
+Once qualified, vacancy survives dismissal switches turning on. Clearing the
+last active switch revokes that qualification before processing an approach on
+the same heartbeat and starts the fresh timers above. Otherwise, room presence
 without an approach moves `Vacant` to `ReadyForUnlock`; losing that presence
 returns to `Vacant` without requiring another delay. An approach in either state
 emits one `Unlock` regardless of dismissal switches and moves to `Occupied`.
 Further approaches cannot unlock again until a new vacancy qualifies, which
-still requires dismissal switches to be off. This rule applies only to room
+still requires dismissal switches to be off. These rules apply only to room
 unlock: Sesame `autolock_dismiss` continues to suppress both timer start and
 firing.
 

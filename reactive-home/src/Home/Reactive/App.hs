@@ -265,9 +265,10 @@ processHeartbeat ::
   , Console :> es
   , Mqtt :> es
   ) =>
+  Duration ->
   [MqttScheduledSwitch] ->
   ClSF (Eff es) (ESPHeartbeatClock es) AppTick ()
-processHeartbeat switches = proc tick -> do
+processHeartbeat roomTimeout switches = proc tick -> do
   switchEvents <- scheduledSwitchEventsWithS publishSwitches switches -< ()
   void $ arrMCl (mapM_ (display Debug . ("Scheduled switch: " <>) . T.show)) -< switchEvents
   sesame <- constMCl (asks @HomeEnv (.sesame)) -< ()
@@ -291,7 +292,7 @@ processHeartbeat switches = proc tick -> do
         Nothing -> returnA -< ()
         Just {} -> do
           -- FIXME: too dirty!
-          (fb, result) <- hoistClSF withUnlockConfig unlockFeedbackS -< (tick.tickMqttSnapshot, snapshot)
+          (fb, result) <- hoistClSF withUnlockConfig (unlockFeedbackS roomTimeout) -< (tick.tickMqttSnapshot, snapshot)
           arrMCl (display Debug . ("ESP feedback: " <>) . T.show) -< fb
           void $ mapMaybe (arrMCl $ display Debug . ("ESPUnlock: " <>) . T.show) -< result
           void $ mapMaybe (hoistClSF withSesameConfig $ hoistClSF withUnlockConfig $ arrMCl handleUnlockEvent) -< result
@@ -327,10 +328,11 @@ mainLoop ::
   , Concurrent :> es
   , IOE :> es
   ) =>
+  Duration ->
   [MqttScheduledSwitch] ->
   Rhine (Eff es) (AppClock es) () ()
-mainLoop switches =
-  processMqtt @@ EffMqttClock >-- appBuffer --> processHeartbeat switches @@ ioClock waitClock
+mainLoop roomTimeout switches =
+  processMqtt @@ EffMqttClock >-- appBuffer --> processHeartbeat roomTimeout switches @@ ioClock waitClock
 
 display :: (Reader HomeEnv :> es, Console :> es) => LogLevel -> T.Text -> Eff es ()
 display level a = do
@@ -352,9 +354,17 @@ application ::
   ) =>
   Eff es ()
 application = do
+  unlock <- asks @HomeEnv (.unlock)
+  roomTimeout <- case unlock of
+    Nothing -> pure $ seconds 0
+    Just cfg -> do
+      esp <- asks @HomeEnv (.espresense)
+      case esp >>= (HM.lookup cfg.room . (.rooms)) of
+        Nothing -> liftIO $ throwIO $ userError $ "Unknown unlock room: " <> T.unpack cfg.room
+        Just room -> pure room.timeout
   initializeESPresense
   switches <- asks @HomeEnv (foldMap (.scheduled_switches) . (.mqttDevices))
-  flow (mainLoop switches) `concurrently_` reportMackerelMetrics
+  flow (mainLoop roomTimeout switches) `concurrently_` reportMackerelMetrics
 
 reportMackerelMetrics ::
   ( Concurrent :> es

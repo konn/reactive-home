@@ -32,6 +32,7 @@ import Data.Foldable (for_)
 import Data.HashMap.Strict qualified as HM
 import Data.Hashable (Hashable)
 import Data.Text qualified as T
+import Data.Time (addUTCTime)
 import Effectful (Eff, (:>))
 import Effectful.Network.Mqtt (Mqtt, publish_)
 import Effectful.Reader.Static (Reader, asks)
@@ -56,7 +57,9 @@ data UnlockConfig = UnlockConfig
   , locks :: ![T.Text]
   , approach :: [ApproachCondition]
   , dismiss :: [DismissCondition]
-  -- ^ Switches that prevent qualifying a new vacancy.
+  {- ^ Switches that prevent new vacancy qualification. Clearing the last active
+  switch restarts room absence confirmation and the vacancy delay.
+  -}
   }
   deriving stock (Eq, Show, Ord, Generic)
   deriving anyclass (Hashable, ToJSON, FromJSON, ToJSONKey)
@@ -107,7 +110,7 @@ data UnlockStatus
     Occupied
   | -- | Empty and waiting for the specified delay to pass
     Waiting
-  | -- | Qualified vacancy, preserved until an approach is detected
+  | -- | Qualified vacancy, preserved until approach or dismissal is cleared
     Vacant
   | -- | Qualified vacancy with room presence, still waiting for an approach
     ReadyForUnlock
@@ -117,7 +120,10 @@ data UnlockStatus
 data UnlockFeedback = UnlockFeedback
   { near :: !Bool
   , occupied :: !Bool
+  , rechecking :: !Bool
+  -- ^ Waiting for a fresh room timeout after dismissal was cleared.
   , duration :: !(Diff UTCTime)
+  -- ^ Eligible vacancy duration, excluding dismissal and room rechecking.
   , status :: !UnlockStatus
   }
   deriving stock (Eq, Show, Ord, Generic)
@@ -128,16 +134,34 @@ unlockFeedbackS ::
   ( Reader UnlockConfig :> es
   , Time cl ~ UTCTime
   ) =>
+  -- | Presence timeout of the configured unlock room.
+  Duration ->
   ClSF (Eff es) cl (MqttSnapshot, ESPresenseSnapshot) (UnlockFeedback, Maybe UnlockEvent)
-unlockFeedbackS =
-  (second (anyApproachDetected &&& isRoomOccupied >-> spanned)) >-> feedback Waiting proc ((mqtt, (near, Spanned {value = occupied, ..})), prev) -> do
+unlockFeedbackS roomTimeout =
+  feedback (Waiting, False, Nothing) proc ((mqtt, snapshot), (previousStatus, previousDismissal, previousDeadline)) -> do
+    (near, occupied) <- anyApproachDetected &&& isRoomOccupied -< snapshot
     thresh <- constMCl (asks @UnlockConfig (.delay)) -< ()
     dismissal <- constMCl (asks @UnlockConfig (.dismiss)) -< ()
+    TimeInfo {absolute} <- timeInfo -< ()
     let !dismiss =
           or
             [ mqtt.switches HM.!? sw.switch == Just True
             | sw <- dismissal
             ]
+        !released = previousDismissal && not dismiss
+        !deadline =
+          if released
+            then Just $ addUTCTime (realToFrac roomTimeout.seconds) absolute
+            else previousDeadline
+        !rechecking = maybe False (absolute <) deadline
+        !prev = if released then Waiting else previousStatus
+        !eligible = not $ near || occupied || dismiss
+    Spanned {duration = vacancyDuration} <- spanned -< eligible
+    -- Clip the observed vacancy to the fresh room deadline. Even if heartbeats
+    -- are delayed, time before this deadline cannot count toward unlock.delay.
+    let !duration
+          | not eligible = 0
+          | otherwise = maybe vacancyDuration (min vacancyDuration . max 0 . diffTime absolute) deadline
         !next =
           if
             | near ->
@@ -149,24 +173,28 @@ unlockFeedbackS =
                   Vacant; ReadyForUnlock -> (Nothing, ReadyForUnlock)
                   _ -> (Nothing, Occupied)
             | (ReadyForUnlock; Vacant) <- prev -> (Nothing, Vacant)
-            -- Dismissal gates only new vacancy qualification, not an existing one.
-            | duration >= thresh.seconds, not dismiss -> (Nothing, Vacant)
+            -- Turning dismissal on preserves qualification; turning it off
+            -- resets prev above and requires both timers to run afresh.
+            | duration >= thresh.seconds, not dismiss, not rechecking -> (Nothing, Vacant)
             | otherwise -> (Nothing, Waiting)
         !(event, status) = next
-        !fb = UnlockFeedback {near, occupied, duration, status}
-    returnA -< ((fb, event), status)
+        !fb = UnlockFeedback {near, occupied, rechecking, duration, status}
+    returnA -< ((fb, event), (status, dismiss, deadline))
 
 {- | Emits 'Unlock' on the first approach after a qualified vacancy.
-Dismissal switches prevent qualifying new vacancies, but do not revoke one
-already qualified while the room was empty for at least the specified delay.
+Turning dismissal on preserves a qualified vacancy. Clearing the last active
+dismissal switch revokes it and restarts room absence confirmation followed by
+the vacancy delay. Sensor observations retain their original timestamps.
 -}
 unlockEventS ::
   ( Reader UnlockConfig :> es
   , Time cl ~ UTCTime
   ) =>
+  -- | Presence timeout of the configured unlock room.
+  Duration ->
   ClSF (Eff es) cl (MqttSnapshot, ESPresenseSnapshot) (Maybe UnlockEvent)
-unlockEventS = proc snapshot -> do
-  (_, event) <- unlockFeedbackS -< snapshot
+unlockEventS roomTimeout = proc snapshot -> do
+  (_, event) <- unlockFeedbackS roomTimeout -< snapshot
   returnA -< event
 
 handleUnlockEvent ::
