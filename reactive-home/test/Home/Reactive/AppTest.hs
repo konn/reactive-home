@@ -4,7 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Home.Reactive.AppTest (test_configParsing, test_mqttConfigJson) where
+module Home.Reactive.AppTest (test_configParsing, test_mqttConfigJson, test_unlockConfig) where
 
 import Data.Aeson qualified as A
 import Data.HashMap.Strict qualified as HM
@@ -13,9 +13,68 @@ import Home.Reactive.App (Config (..))
 import Home.Reactive.ESPresense (seconds)
 import Home.Reactive.MQTT (MqttDevices (..), MqttScheduledSwitch (..), mqttTopicFilters)
 import Home.Reactive.Sesame5 (AutoLockDismissCondition (..), SesameConfig (..), SesameDevice (..), SesameUUID (..))
+import Home.Reactive.Unlock (ConfirmationCondition (..), UnlockConfig (..))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
 import Toml (decodeExact, genericCodec)
+
+test_unlockConfig :: TestTree
+test_unlockConfig =
+  testGroup
+    "unlock confirmation config"
+    [ testCase "legacy TOML defaults to no confirmation" $
+        (fmap (.confirm) . (.unlock) <$> decodeExact (genericCodec @Config) dismissSwitchToml)
+          @?= Right (Just [])
+    , testCase "inline confirmation references an existing sensor by name" $
+        (fmap (.confirm) . (.unlock) <$> decodeExact (genericCodec @Config) confirmationToml)
+          @?= Right (Just [ConfirmationCondition "bedroom" "watch:" 5.8 (seconds 5)])
+    , testCase "empty confirmation list disables the extra check" $
+        (fmap (.confirm) . (.unlock) <$> decodeExact (genericCodec @Config) (base <> "confirm = []\n"))
+          @?= Right (Just [])
+    , testCase "table array supports arbitrary sensor and device names" $
+        ( fmap (.confirm) . (.unlock)
+            <$> decodeExact
+              (genericCodec @Config)
+              (base <> "\n[[unlock.confirm]]\nsensor = \"study\"\ndevice = \"phone:\"\ndistance = 4.2\nmax_age = \"2.5s\"\n")
+        )
+          @?= Right (Just [ConfirmationCondition "study" "phone:" 4.2 (seconds 2.5)])
+    , testCase "legacy JSON defaults to no confirmation and new JSON round-trips" $ do
+        let legacy = "{\"room\":\"home\",\"delay\":\"30s\",\"locks\":[],\"approach\":[],\"dismiss\":[]}"
+        case A.eitherDecode @UnlockConfig legacy of
+          Left err -> assertFailure err
+          Right cfg -> do
+            cfg.confirm @?= []
+            let updated = cfg {confirm = [ConfirmationCondition "bedroom" "watch:" 5.8 (seconds 5)]}
+            A.eitherDecode (A.encode updated) @?= Right updated
+            A.fromJSON (A.toJSON updated) @?= A.Success updated
+    , testGroup
+        "invalid confirmation must never silently disable the check"
+        [ testCase label $
+            case decodeExact (genericCodec @Config) input of
+              Left _ -> pure ()
+              Right cfg -> assertFailure $ "expected TOML failure, got: " <> show cfg
+        | (label, input) <-
+            [ ("wrong collection type", base <> "confirm = false\n")
+            , ("zero distance", replace "distance = 5.8" "distance = 0.0")
+            , ("negative distance", replace "distance = 5.8" "distance = -1.0")
+            , ("infinite distance", replace "distance = 5.8" "distance = inf")
+            , ("NaN distance", replace "distance = 5.8" "distance = nan")
+            , ("invalid distance", replace "distance = 5.8" "distance = \"near\"")
+            , ("missing sensor", replace "sensor = \"bedroom\", " "")
+            , ("missing device", replace "device = \"watch:\", " "")
+            , ("missing max_age", replace ", max_age = \"5s\"" "")
+            , ("invalid max_age", replace "max_age = \"5s\"" "max_age = \"old\"")
+            , ("zero max_age", replace "max_age = \"5s\"" "max_age = \"0s\"")
+            , ("negative max_age", replace "max_age = \"5s\"" "max_age = \"-5s\"")
+            , ("infinite max_age", replace "max_age = \"5s\"" ("max_age = \"" <> T.replicate 400 "9" <> "s\""))
+            , ("unknown key", replace "max_age = \"5s\"" "max_age = \"5s\", max_ag = \"2s\"")
+            ]
+        ]
+    ]
+  where
+    base = "[unlock]\nroom = \"home\"\ndelay = \"30s\"\nlocks = []\n"
+    confirmationToml = base <> "confirm = [{ sensor = \"bedroom\", device = \"watch:\", distance = 5.8, max_age = \"5s\" }]\n"
+    replace old new = T.replace old new confirmationToml
 
 test_configParsing :: TestTree
 test_configParsing =

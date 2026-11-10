@@ -47,12 +47,33 @@ Once qualified, vacancy survives dismissal switches turning on. Clearing the
 last active switch revokes that qualification before processing an approach on
 the same heartbeat and starts the fresh timers above. Otherwise, room presence
 without an approach moves `Vacant` to `ReadyForUnlock`; losing that presence
-returns to `Vacant` without requiring another delay. An approach in either state
-emits one `Unlock` regardless of dismissal switches and moves to `Occupied`.
+returns to `Vacant` without requiring another delay. An approach in either state,
+with all optional `unlock.confirm` conditions satisfied, emits one `Unlock`
+regardless of dismissal switches and moves to `Occupied`.
 Further approaches cannot unlock again until a new vacancy qualifies, which
 still requires dismissal switches to be off. These rules apply only to room
 unlock: Sesame `autolock_dismiss` continues to suppress both timer start and
 firing.
+
+`unlock.approach` remains an OR of sensor/device distance checks. `unlock.confirm`
+is an optional list of additional AND conditions with `sensor`, `device`,
+`distance`, and `max_age`. Names and IDs reference the existing ESPresense
+configuration, and startup validation rejects unknown references before any
+automation starts. Distances and durations must be finite and positive. Each
+confirmation uses the latest per-sensor distance (not the room moving average),
+with an inclusive distance threshold and observation age in `[0, max_age)`;
+missing observations fail the check. Heartbeats never refresh observation times.
+The sensor snapshot's own timeout may expire an observation sooner than `max_age`.
+Omitting `confirm` or setting it to `[]` restores the previous behavior in both
+TOML and JSON. There are no sensor-specific names or thresholds in the algorithm.
+
+An unconfirmed approach preserves qualification (`ReadyForUnlock` with room
+presence, otherwise `Vacant`), so later confirmation can unlock on a heartbeat
+while an approach is still present. Confirmation alone cannot unlock, and the
+raw approach still prevents qualifying a new vacancy. Dismissal release continues
+to revoke qualification even while waiting for confirmation. `UnlockFeedback`
+reports the raw `near` flag and the independent `confirmed` flag (true for an
+empty list). Configuration changes require a service restart.
 
 ## Scheduled MQTT Switches
 

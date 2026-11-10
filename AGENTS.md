@@ -27,6 +27,11 @@ architecture from those files, and you must update them after design changes.
 Cabal nix-style builds; `cabal.project` is the source of truth. GHC **9.12.4**, pinned via
 `cabal.project.freeze` and `ci/configs/`. Do not use stack or invoke `ghc` directly.
 
+**Production ARM Linux builds must run in CI.** Deploy the resulting CI artifact.
+Do not build production ARM Linux binaries locally with Docker or on the production
+host. Local macOS builds/tests are for development validation only. Do not create
+Docker build containers, images, or volumes as a substitute for the CI build.
+
 ```bash
 cabal build all                # build every package
 cabal build hasquitto-core     # build one package

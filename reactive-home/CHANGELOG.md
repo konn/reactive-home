@@ -8,4 +8,9 @@ and this project adheres to the
 
 ## Unreleased
 
+- Add optional `unlock.confirm` sensor/device distance and freshness conditions,
+  configurable in TOML with an empty list restoring approach-only auto-unlock.
+  Preserve qualified vacancy while waiting for confirmation and report the
+  confirmation result in unlock feedback.
+
 ## 0.1.0.0 - YYYY-MM-DD

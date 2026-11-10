@@ -36,6 +36,10 @@ families:
   switch revokes qualification and restarts the room-presence timeout followed
   by the unlock delay. This recheck applies to auto-unlock while retaining actual
   ESPresense observation timestamps.
+  Optional `unlock.confirm` conditions require fresh, in-range observations from
+  configured sensor/device pairs alongside an approach. These configurable AND
+  conditions preserve qualified vacancy while waiting; an empty list restores
+  approach-only behavior. See `ARCHITECTURES/reactive-home.md` for the contract.
   The app defaults to broker-assigned MQTT client identifiers; a stable
   `clientId` is an optional top-level config setting for deployments that need
   one.

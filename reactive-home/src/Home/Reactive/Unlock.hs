@@ -19,15 +19,18 @@ module Home.Reactive.Unlock (
   UnlockConfig (..),
   UnlockEvent (..),
   ApproachCondition (..),
+  ConfirmationCondition (..),
   DismissCondition (..),
   UnlockStatus (..),
   UnlockFeedback (..),
   unlockFeedbackS,
   unlockEventS,
   handleUnlockEvent,
+  validateUnlockSensors,
 ) where
 
 import Data.Aeson (FromJSON, ToJSON, ToJSONKey)
+import Data.Aeson qualified as A
 import Data.Foldable (for_)
 import Data.HashMap.Strict qualified as HM
 import Data.Hashable (Hashable)
@@ -42,8 +45,9 @@ import Home.Reactive.ESPresense
 import Home.Reactive.MQTT
 import Home.Reactive.Sesame5
 import Home.Reactive.Utils
+import Toml ((.=))
 import Toml qualified
-import Toml.Codec.Generic
+import Validation (Validation (..))
 
 -- TODO: Disable the unlock during the night shift.
 
@@ -56,14 +60,60 @@ data UnlockConfig = UnlockConfig
   , delay :: !Duration
   , locks :: ![T.Text]
   , approach :: [ApproachCondition]
+  , confirm :: [ConfirmationCondition]
+  -- ^ All additional conditions must hold alongside an approach. Empty disables confirmation.
   , dismiss :: [DismissCondition]
   {- ^ Switches that prevent new vacancy qualification. Clearing the last active
   switch restarts room absence confirmation and the vacancy delay.
   -}
   }
   deriving stock (Eq, Show, Ord, Generic)
-  deriving anyclass (Hashable, ToJSON, FromJSON, ToJSONKey)
-  deriving (Toml.HasItemCodec, Toml.HasCodec) via Toml.TomlTable UnlockConfig
+  deriving anyclass (Hashable, ToJSON, ToJSONKey)
+
+instance Toml.HasCodec UnlockConfig where
+  hasCodec = Toml.table unlockConfigCodec
+
+instance Toml.HasItemCodec UnlockConfig where
+  hasItemCodec = Right unlockConfigCodec
+
+unlockConfigCodec :: Toml.TomlCodec UnlockConfig
+unlockConfigCodec = do
+  room <- Toml.text "room" .= (.room)
+  unlockDelay <- Toml.hasCodec "delay" .= (.delay)
+  locks <- Toml.hasCodec "locks" .= (.locks)
+  approach <- Toml.hasCodec "approach" .= (.approach)
+  confirm <- confirmationListCodec .= (.confirm)
+  dismiss <- Toml.hasCodec "dismiss" .= (.dismiss)
+  pure UnlockConfig {delay = unlockDelay, ..}
+
+-- tomland's table-list codec omits empty lists when encoding, so decodeExact
+-- rejects an explicit `confirm = []`. Preserve that representation, and accept
+-- only an actual empty array (never a malformed value) as the disabled setting.
+confirmationListCodec :: Toml.TomlCodec [ConfirmationCondition]
+confirmationListCodec =
+  Toml.Codec
+    { Toml.codecRead = \toml ->
+        if HM.member "confirm" toml.tomlPairs
+          then [] <$ Toml.codecRead emptyCodec toml
+          else Toml.codecRead listCodec toml
+    , Toml.codecWrite = \conditions ->
+        if null conditions
+          then [] <$ Toml.codecWrite emptyCodec []
+          else Toml.codecWrite listCodec conditions
+    }
+  where
+    emptyCodec = Toml.hardcoded ([] :: [T.Text]) (Toml._Array Toml._Text) "confirm"
+    listCodec = Toml.list confirmationCodec "confirm"
+
+instance FromJSON UnlockConfig where
+  parseJSON = A.withObject "UnlockConfig" \obj ->
+    UnlockConfig
+      <$> obj A..: "room"
+      <*> obj A..: "delay"
+      <*> obj A..: "locks"
+      <*> obj A..: "approach"
+      <*> obj A..:? "confirm" A..!= []
+      <*> obj A..: "dismiss"
 
 data ApproachCondition = ApproachCondition
   { sensor :: !ESPSensorName
@@ -78,6 +128,74 @@ data DismissCondition = DismissCondition {switch :: !T.Text}
   deriving stock (Eq, Show, Ord, Generic)
   deriving anyclass (Hashable, ToJSON, FromJSON, ToJSONKey)
   deriving (Toml.HasItemCodec, Toml.HasCodec) via Toml.TomlTable DismissCondition
+
+{- | References the same sensor/device definitions as an approach, with an
+explicit freshness limit. No sensor has a special role in the implementation.
+-}
+data ConfirmationCondition = ConfirmationCondition
+  { sensor :: !ESPSensorName
+  , device :: !ESPDeviceId
+  , distance :: !Float
+  , max_age :: !Duration
+  }
+  deriving stock (Eq, Show, Ord, Generic)
+  deriving anyclass (Hashable, ToJSON, ToJSONKey)
+
+instance FromJSON ConfirmationCondition where
+  parseJSON value = do
+    condition <- A.genericParseJSON A.defaultOptions value
+    either (fail . T.unpack . snd) pure (validateConfirmation condition)
+
+instance Toml.HasCodec ConfirmationCondition where
+  hasCodec = Toml.table confirmationCodec
+
+instance Toml.HasItemCodec ConfirmationCondition where
+  hasItemCodec = Right confirmationCodec
+
+confirmationCodec :: Toml.TomlCodec ConfirmationCondition
+confirmationCodec =
+  Toml.Codec
+    { Toml.codecRead = \toml ->
+        case Toml.codecRead baseCodec toml of
+          Failure errors -> Failure errors
+          Success condition ->
+            case validateConfirmation condition of
+              Left (key, message) -> Failure [Toml.BiMapError key (Toml.ArbitraryError message)]
+              Right valid -> Success valid
+    , Toml.codecWrite = Toml.codecWrite baseCodec
+    }
+  where
+    baseCodec = Toml.genericCodec @ConfirmationCondition
+
+validateConfirmation :: ConfirmationCondition -> Either (Toml.Key, T.Text) ConfirmationCondition
+validateConfirmation condition
+  | not (positiveFinite condition.distance) = Left ("distance", "distance must be finite and positive")
+  | not (positiveFinite condition.max_age.seconds) = Left ("max_age", "max_age must be a finite, positive duration")
+  | otherwise = Right condition
+  where
+    positiveFinite :: (RealFloat a) => a -> Bool
+    positiveFinite value = value > 0 && not (isNaN value || isInfinite value)
+
+-- | Catch misspelled confirmation references before starting any automation.
+validateUnlockSensors :: Maybe ESPresenseConfig -> UnlockConfig -> Either T.Text ()
+validateUnlockSensors esp cfg = for_ cfg.confirm \condition -> do
+  _ <- either (Left . snd) Right (validateConfirmation condition)
+  if condition.sensor `elem` maybe [] (map (.name) . (.sensors)) esp
+    then pure ()
+    else Left $ "Unknown unlock.confirm sensor: " <> T.show condition.sensor
+  if condition.device `elem` maybe [] (.devices) esp
+    then pure ()
+    else Left $ "Unknown unlock.confirm device: " <> T.show condition.device
+
+confirmationSatisfied :: UTCTime -> ESPresenseSnapshot -> ConfirmationCondition -> Bool
+confirmationSatisfied now snapshot condition =
+  case HM.lookup condition.device =<< HM.lookup condition.sensor snapshot.sensors of
+    Nothing -> False
+    Just observation ->
+      let age = diffTime now observation.timestamp
+       in observation.distance <= condition.distance
+            && age >= 0
+            && age < condition.max_age.seconds
 
 -- TODO: Use more fine-grained infor source than monolichic 'ESPresenseSnapshot'.
 
@@ -110,15 +228,17 @@ data UnlockStatus
     Occupied
   | -- | Empty and waiting for the specified delay to pass
     Waiting
-  | -- | Qualified vacancy, preserved until approach or dismissal is cleared
+  | -- | Qualified vacancy, preserved until confirmed approach or dismissal is cleared
     Vacant
-  | -- | Qualified vacancy with room presence, still waiting for an approach
+  | -- | Qualified vacancy with room presence, waiting for a confirmed approach
     ReadyForUnlock
   deriving stock (Eq, Show, Ord, Generic)
   deriving anyclass (Hashable)
 
 data UnlockFeedback = UnlockFeedback
   { near :: !Bool
+  , confirmed :: !Bool
+  -- ^ All additional conditions hold; True when no confirmation is configured.
   , occupied :: !Bool
   , rechecking :: !Bool
   -- ^ Waiting for a fresh room timeout after dismissal was cleared.
@@ -142,8 +262,10 @@ unlockFeedbackS roomTimeout =
     (near, occupied) <- anyApproachDetected &&& isRoomOccupied -< snapshot
     thresh <- constMCl (asks @UnlockConfig (.delay)) -< ()
     dismissal <- constMCl (asks @UnlockConfig (.dismiss)) -< ()
+    confirmation <- constMCl (asks @UnlockConfig (.confirm)) -< ()
     TimeInfo {absolute} <- timeInfo -< ()
-    let !dismiss =
+    let !confirmed = all (confirmationSatisfied absolute snapshot) confirmation
+        !dismiss =
           or
             [ mqtt.switches HM.!? sw.switch == Just True
             | sw <- dismissal
@@ -166,7 +288,9 @@ unlockFeedbackS roomTimeout =
           if
             | near ->
                 case prev of
-                  Vacant; ReadyForUnlock -> (Just Unlock, Occupied)
+                  Vacant; ReadyForUnlock
+                    | confirmed -> (Just Unlock, Occupied)
+                    | otherwise -> (Nothing, if occupied then ReadyForUnlock else Vacant)
                   Waiting; Occupied -> (Nothing, Occupied)
             | occupied ->
                 case prev of
@@ -178,10 +302,12 @@ unlockFeedbackS roomTimeout =
             | duration >= thresh.seconds, not dismiss, not rechecking -> (Nothing, Vacant)
             | otherwise -> (Nothing, Waiting)
         !(event, status) = next
-        !fb = UnlockFeedback {near, occupied, rechecking, duration, status}
+        !fb = UnlockFeedback {near, confirmed, occupied, rechecking, duration, status}
     returnA -< ((fb, event), (status, dismiss, deadline))
 
-{- | Emits 'Unlock' on the first approach after a qualified vacancy.
+{- | Emits 'Unlock' on the first confirmed approach after a qualified vacancy.
+Unconfirmed approaches preserve qualification and are reconsidered every heartbeat;
+confirmation alone never triggers an unlock. Raw approach still prevents vacancy.
 Turning dismissal on preserves a qualified vacancy. Clearing the last active
 dismissal switch revokes it and restarts room absence confirmation followed by
 the vacancy delay. Sensor observations retain their original timestamps.

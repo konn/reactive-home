@@ -112,6 +112,43 @@ assign a unique client identifier, which avoids client-id takeover conflicts if 
 previous interrupted process is still disconnecting or reconnecting. Set
 `clientId = "..."` only when a stable MQTT client identity is required.
 
+### Auto-unlock confirmation
+
+`unlock.approach` retains its existing OR semantics. Optional `unlock.confirm`
+conditions must **all** hold at the same heartbeat as an approach before a
+qualified return can unlock. They reference the existing `espresense.sensors`
+names and `espresense.devices` IDs; no sensor name or distance is hard-coded.
+For example, add this line inside the existing `[unlock]` table:
+
+```toml
+confirm = [{ sensor = "bedroom", device = "watch:", distance = 5.8, max_age = "5s" }]
+```
+
+With an existing entrance approach threshold of 5 m, this requires entrance
+distance ≤ 5 m **and** bedroom distance ≤ 5.8 m. Change `distance` to tune the
+confirmation threshold. Set `confirm = []` or remove the `confirm` setting to
+restore entrance-only operation. This does not remove the sensor or change room
+presence detection. `[[unlock.confirm]]` table arrays are also supported; remove
+all of those tables when disabling confirmation instead of mixing both forms.
+
+`max_age` is the maximum age of the confirmation observation: it must be strictly
+younger than this duration. Missing, expired, or future-dated observations cannot
+confirm an unlock. Both distance and duration must be finite and positive.
+Unknown confirmation sensor names or device IDs are rejected at startup.
+The check uses the latest per-sensor distance, like `approach`, independently of
+the moving average used for room presence.
+
+When an approach arrives before confirmation, the qualified vacancy is preserved
+and reevaluated on each 500 ms heartbeat. Confirmation alone cannot unlock; an
+approach must still be present. The debug `ESP feedback` log includes `confirmed`
+alongside the existing `near` and `status` fields. No confirmations means
+`confirmed = True` and preserves the existing behavior.
+
+Configuration is read at startup. After editing `~/.config/reactive-home.toml`
+on the service host, run `systemctl --user restart reactive-home.service`.
+Restarting starts the unlock state in `Waiting`, so a new vacancy must qualify
+before the next automatic unlock.
+
 ### Scheduled MQTT switches
 
 Declare recurring switches under `mqtt.scheduled_switches`:

@@ -5,13 +5,13 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Home.Reactive.ESPresenseTest (test_tomlParsing, test_roomAbsence, test_deltas, test_unlockHeartbeat, test_unlockDismissalReset) where
+module Home.Reactive.ESPresenseTest (test_tomlParsing, test_roomAbsence, test_deltas, test_unlockHeartbeat, test_unlockDismissalReset, test_unlockConfirmation) where
 
 import Control.Monad.Trans.Reader (runReaderT)
 import Data.HashMap.Strict qualified as HM
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text qualified as T
-import Data.Time (UTCTime, addUTCTime, diffUTCTime)
+import Data.Time (NominalDiffTime, UTCTime, addUTCTime, diffUTCTime)
 import Effectful (Eff, runPureEff)
 import Effectful.Reader.Static (Reader, runReader)
 import FRP.Rhine (
@@ -40,9 +40,11 @@ import Home.Reactive.ESPresense (
   minutes,
   seconds,
  )
+import Home.Reactive.ESPresense qualified as Snapshot (ESPresenseSnapshot (..))
 import Home.Reactive.MQTT (MqttSnapshot (..))
 import Home.Reactive.Unlock (
   ApproachCondition (..),
+  ConfirmationCondition (..),
   DismissCondition (..),
   UnlockConfig (..),
   UnlockEvent (..),
@@ -50,7 +52,9 @@ import Home.Reactive.Unlock (
   UnlockStatus (..),
   unlockEventS,
   unlockFeedbackS,
+  validateUnlockSensors,
  )
+import Home.Reactive.Unlock qualified as Confirm (ConfirmationCondition (..))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
 import Toml (decodeExact)
@@ -365,6 +369,138 @@ test_deltas =
               , rooms = HM.fromList [("home", HM.fromList [("watch:", Nothing)])]
               }
     ]
+
+test_unlockConfirmation :: TestTree
+test_unlockConfirmation =
+  testGroup
+    "unlock confirmation"
+    [ testCase "blocks the observed street pass, preserves qualification, then accepts the return" $ do
+        let inputs =
+              qualified
+                <> [ sample 5 4.84 6.19
+                   , sample 6 4.69 6.09
+                   , sample 7 7.0 5.0
+                   , sample 20 4.64 6.29
+                   , sample 22 4.64 5.65
+                   , sample 23 4.64 5.65
+                   ]
+            results = runUnlockFeedbackInputs cfg inputs
+        snd <$> results @?= [Nothing, Nothing, Nothing, Nothing, Nothing, Nothing, Just Unlock, Nothing]
+        (.status) . fst <$> results @?= [Waiting, Vacant, ReadyForUnlock, ReadyForUnlock, ReadyForUnlock, ReadyForUnlock, Occupied, Occupied]
+        (.confirmed) . fst <$> results @?= [False, False, False, False, True, False, True, True]
+    , testCase "threshold changes take effect and include the boundary" $ do
+        let inputs = qualified <> [sample 5 5.0 5.8]
+        runUnlockInputs cfg inputs @?= [Nothing, Nothing, Just Unlock]
+        runUnlockInputs (cfg {confirm = [condition {Confirm.distance = 5.5}]}) inputs @?= [Nothing, Nothing, Nothing]
+    , testCase "empty confirmation restores entrance-only behaviour" $
+        runUnlockInputs (cfg {confirm = []}) (qualified <> [sample 5 4.84 6.19])
+          @?= [Nothing, Nothing, Just Unlock]
+    , testCase "missing sensor waits until a fresh confirmation arrives" $
+        runUnlockInputs
+          cfg
+          ( qualified
+              <> [ TestSnapshot (at 5) (exampleOccupiedSnapshot (at 5) 4.5)
+                 , sample 6 4.5 5.0
+                 ]
+          )
+          @?= [Nothing, Nothing, Nothing, Just Unlock]
+    , testCase "bedroom alone never triggers even after a denied approach" $
+        runUnlockInputs
+          cfg
+          ( qualified
+              <> [ sample 5 4.5 6.2
+                 , TestSnapshot (at 6) (exampleBedroomSnapshot (at 6) 5.0)
+                 , sample 7 4.5 5.0
+                 ]
+          )
+          @?= [Nothing, Nothing, Nothing, Nothing, Just Unlock]
+    , testCase "qualification survives denial even without room presence" $ do
+        let withoutRoom (TestSnapshot t s) = TestSnapshot t (s {Snapshot.rooms = HM.empty})
+            results = runUnlockFeedbackInputs cfg $ qualified <> map withoutRoom [sample 5 4.5 6.2, sample 6 4.5 5.0]
+        (.status) . fst <$> results @?= [Waiting, Vacant, Vacant, Occupied]
+        snd <$> results @?= [Nothing, Nothing, Nothing, Just Unlock]
+    , testCase "unconfirmed approach cannot itself qualify a vacancy" $ do
+        let inputs = [TestSnapshot (at t) ((pair t 4.5 6.2) {Snapshot.rooms = HM.empty}) | t <- [0, 4, 10]]
+        runUnlockInputs cfg (inputs <> [sample 11 4.5 5.0]) @?= replicate 4 Nothing
+    , testCase "freshness uses observation time, not repeated heartbeat time" $ do
+        let old = pair 0 4.5 5.0
+        runUnlockInputs
+          cfg
+          ( qualified
+              <> [ TestSnapshot (at 5) old
+                 , TestSnapshot (at 6) old
+                 , sample 7 4.5 5.0
+                 ]
+          )
+          @?= [Nothing, Nothing, Nothing, Nothing, Just Unlock]
+    , testCase "freshness limit is configurable, exclusive, and rejects future samples" $ do
+        let inputs age = qualified <> [TestSnapshot (at 5) (pair (5 - age) 4.5 5.0)]
+        runUnlockInputs cfg (inputs 4.999) @?= [Nothing, Nothing, Just Unlock]
+        runUnlockInputs cfg (inputs 5) @?= [Nothing, Nothing, Nothing]
+        runUnlockInputs cfg (inputs (-1)) @?= [Nothing, Nothing, Nothing]
+        runUnlockInputs (cfg {confirm = [condition {max_age = seconds 6}]}) (inputs 5)
+          @?= [Nothing, Nothing, Just Unlock]
+    , testCase "all configured confirmations are required" $ do
+        let other :: ConfirmationCondition
+            other = condition {Confirm.sensor = "study", Confirm.device = "phone:"}
+            initial = pair 5 4.5 5.0
+            both :: ESPresenseSnapshot
+            both = initial {Snapshot.sensors = HM.insert "study" (HM.singleton "phone:" (sensorStateAt (at 6) 4)) initial.sensors}
+        runUnlockInputs
+          (cfg {confirm = [condition, other]})
+          ( qualified
+              <> [TestSnapshot (at 5) initial, TestSnapshot (at 6) both]
+          )
+          @?= [Nothing, Nothing, Nothing, Just Unlock]
+    , testCase "sensor and device names are entirely configuration-driven" $ do
+        let other :: ConfirmationCondition
+            other = condition {Confirm.sensor = "study", Confirm.device = "phone:"}
+            entrance = exampleOccupiedSnapshot (at 5) 4.5
+            renamed :: ESPresenseSnapshot
+            renamed = entrance {Snapshot.sensors = HM.insert "study" (HM.singleton "phone:" (sensorStateAt (at 5) 5.0)) entrance.sensors}
+        runUnlockInputs (cfg {confirm = [other]}) (qualified <> [TestSnapshot (at 5) renamed])
+          @?= [Nothing, Nothing, Just Unlock]
+    , testCase "existing approach alternatives remain OR conditions" $
+        runUnlockInputs
+          (cfg {approach = ApproachCondition "absent" "phone:" 1 : cfg.approach})
+          (qualified <> [sample 5 4.5 5.0])
+          @?= [Nothing, Nothing, Just Unlock]
+    , testCase "clearing dismissal revokes qualification while waiting for confirmation" $ do
+        let inputs =
+              [TestUnlockSnapshot t emptyMqttSnapshot s | TestSnapshot t s <- qualified]
+                <> [ TestUnlockSnapshot (at 5) dismissedMqttSnapshot (pair 5 4.5 6.2)
+                   , TestUnlockSnapshot (at 6) dismissalOffMqttSnapshot (pair 6 4.5 5.0)
+                   ]
+        runUnlockInputsWithMqtt (cfg {dismiss = dismissUnlockConfig.dismiss}) inputs @?= replicate 4 Nothing
+    , testCase "turning dismissal on preserves qualified confirmed approach semantics" $ do
+        let inputs =
+              [TestUnlockSnapshot t emptyMqttSnapshot s | TestSnapshot t s <- qualified]
+                <> [ TestUnlockSnapshot (at 5) dismissedMqttSnapshot (pair 5 4.5 6.2)
+                   , TestUnlockSnapshot (at 6) dismissedMqttSnapshot (pair 6 4.5 5.0)
+                   ]
+        runUnlockInputsWithMqtt (cfg {dismiss = dismissUnlockConfig.dismiss}) inputs
+          @?= [Nothing, Nothing, Nothing, Just Unlock]
+    , testCase "confirmation references must be existing configured sensors and devices" $ do
+        validateUnlockSensors (Just windowedPresenceConfig) cfg @?= Right ()
+        validateUnlockSensors Nothing (cfg {confirm = []}) @?= Right ()
+        mapM_
+          ( \bad -> case validateUnlockSensors (Just windowedPresenceConfig) bad of
+              Left _ -> pure ()
+              Right () -> assertFailure "accepted an unknown confirmation reference"
+          )
+          [cfg {confirm = [condition {Confirm.sensor = "typo"}]}, cfg {confirm = [condition {Confirm.device = "phone:"}]}]
+    ]
+  where
+    condition :: ConfirmationCondition
+    condition = ConfirmationCondition "bedroom" "watch:" 5.8 (seconds 5)
+    cfg = exampleUnlockConfig {delay = seconds 3, confirm = [condition]}
+    at t = addUTCTime t baseTime
+    qualified = [TestSnapshot (at 0) vacantSnapshot, TestSnapshot (at 4) vacantSnapshot]
+    pair :: NominalDiffTime -> Float -> Float -> ESPresenseSnapshot
+    pair t entranceDistance bedroomDistance =
+      let s = exampleOccupiedSnapshot (at t) entranceDistance
+       in s {Snapshot.sensors = HM.insert "bedroom" (HM.singleton "watch:" (sensorStateAt (at t) bedroomDistance)) s.sensors}
+    sample t e b = TestSnapshot (at t) (pair t e b)
 
 test_unlockHeartbeat :: TestTree
 test_unlockHeartbeat =
@@ -994,6 +1130,7 @@ unlockConfig =
             }
         ]
     , dismiss = []
+    , confirm = []
     }
 
 exampleUnlockConfig :: UnlockConfig
@@ -1010,6 +1147,7 @@ exampleUnlockConfig =
             }
         ]
     , dismiss = []
+    , confirm = []
     }
 
 dismissUnlockConfig :: UnlockConfig

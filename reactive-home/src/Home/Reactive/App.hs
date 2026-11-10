@@ -409,6 +409,8 @@ initializeESPresense = do
 
 defaultMainWith :: Config -> IO ()
 defaultMainWith config = do
+  forM_ config.unlock $ \cfg ->
+    either (throwIO . userError . T.unpack) pure (validateUnlockSensors config.espresense cfg)
   let topics =
         foldMap espresenseTopicFilters config.espresense
           <> foldMap sesameTopicFilters config.sesame
